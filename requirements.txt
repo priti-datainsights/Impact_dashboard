@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+openpyxl
+matplotlib
+numpy
+statsmodels
+streamlit-oauth
+python-pptx
+kaleido==0.2.1
