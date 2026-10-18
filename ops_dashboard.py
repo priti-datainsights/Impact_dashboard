@@ -3,8 +3,8 @@ ops_dashboard.py
 ================
 Operations & Impact Command Center  —  eVidyaloka VRM
 Data source: auto-detected monthly workbooks named VRM_<Month>_<Year>.xlsx /
-DRM_<Month>_<Year>.xlsx (e.g. VRM_April_2026.xlsx), selected one month at a
-time via the in-page "Reporting Month" dropdown. See discover_monthly_files().
+DRM_<Month>_<Year>.xlsx (e.g. VRM_April_2026.xlsx), selected via Monthly
+or Quarterly reporting modes. See discover_monthly_files().
 
 Sheets used (VRM)
 ─────────────────
@@ -47,19 +47,11 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-# Monthly data files live alongside this script and follow the naming
-# convention VRM_<Month>_<Year>.xlsx / DRM_<Month>_<Year>.xlsx, e.g.
-# "VRM_April_2026.xlsx" / "DRM_April_2026.xlsx". See discover_monthly_files().
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Matches VRM_April_2026.xlsx, DRM_May_2026.xlsx, VRM__May__2026.xlsx, etc.
-# (case-insensitive, tolerant of one-or-more underscores between tokens)
 MONTH_FILE_RE = re.compile(r"^(VRM|DRM)_+([A-Za-z]+)_+(\d{4})\.xlsx$", re.IGNORECASE)
 
-# Sheets (VRM) — target/canonical sheet names. Actual lookup is done via
-# _find_sheet(), which resolves these case/whitespace-insensitively so that
-# month-to-month export quirks (e.g. "Active Centers" vs "Active centers")
-# don't break loading.
 SHEET_ACTIVE  = "Active VT"
 SHEET_DROPPED = "Dropped VT"
 SHEET_NEW_REG = "Newly Registered VT "   # trailing space is in the file
@@ -80,16 +72,7 @@ def discover_monthly_files(data_dir: str) -> dict:
     """
     Scan `data_dir` for files matching the VRM_<Month>_<Year>.xlsx /
     DRM_<Month>_<Year>.xlsx naming convention (case-insensitive) and group
-    them by reporting month. Any other files in the directory are ignored.
-
-    Returns an ordered dict (oldest → newest), e.g.:
-        {
-          "April 2026": {"vrm": "/path/VRM_April_2026.xlsx", "drm": "/path/DRM_April_2026.xlsx"},
-          "May 2026":   {"vrm": "/path/VRM_May_2026.xlsx",   "drm": None},
-        }
-    A month is only included if a VRM file was found for it — the DRM file
-    is optional per month, since the DRM Client Report tab already shows
-    its own "file not found" message when missing.
+    them by reporting month.
     """
     months: dict[str, dict] = {}
     try:
@@ -115,13 +98,132 @@ def discover_monthly_files(data_dir: str) -> dict:
     return dict(sorted(months.items(), key=lambda kv: _sort_key(kv[0])))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# QUARTERLY REPORTING HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_quarter_label(month_num: int, year: int) -> str:
+    """Financial year quarters:
+       Q1 = Apr-Jun
+       Q2 = Jul-Sep
+       Q3 = Oct-Dec
+       Q4 = Jan-Mar
+    """
+    if month_num in (4, 5, 6):
+        return f"Q1 {year} (Apr–Jun)"
+    elif month_num in (7, 8, 9):
+        return f"Q2 {year} (Jul–Sep)"
+    elif month_num in (10, 11, 12):
+        return f"Q3 {year} (Oct–Dec)"
+    else:
+        return f"Q4 {year - 1}-{year} (Jan–Mar)"
+
+
+def discover_quarterly_files(data_dir: str) -> dict:
+    """Group available monthly VRM/DRM files into financial quarters."""
+    monthly = discover_monthly_files(data_dir)
+    quarters = {}
+
+    for label, paths in monthly.items():
+        month_name, year = label.rsplit(" ", 1)
+        month_num = _month_sort_key(month_name)
+        year = int(year)
+
+        if month_num == 0:
+            continue
+
+        quarter = get_quarter_label(month_num, year)
+        if quarter not in quarters:
+            quarters[quarter] = []
+
+        quarters[quarter].append({
+            "label": label,
+            "month": month_num,
+            "year": year,
+            "vrm": paths["vrm"],
+            "drm": paths["drm"],
+        })
+
+    for quarter in quarters:
+        quarters[quarter] = sorted(
+            quarters[quarter],
+            key=lambda x: (x["year"], x["month"])
+        )
+
+    return quarters
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MULTI-MONTH VRM AND DRM COMBINE LOADERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_selected_vrm_data(selected_entries: list) -> dict:
+    """
+    Loads VRM data for multiple selected month entries and concatenates 
+    them together across 'active', 'dropped', and 'new_reg' sheets.
+    """
+    active_dfs, dropped_dfs, new_reg_dfs = [], [], []
+
+    for entry in selected_entries:
+        vrm_path = entry.get("vrm")
+        if vrm_path and os.path.exists(vrm_path):
+            month_data = load_data(vrm_path)
+            if month_data:
+                if "active" in month_data and not month_data["active"].empty:
+                    month_data["active"]["Reporting Period"] = entry["label"]
+                    active_dfs.append(month_data["active"])
+                
+                if "dropped" in month_data and not month_data["dropped"].empty:
+                    month_data["dropped"]["Reporting Period"] = entry["label"]
+                    dropped_dfs.append(month_data["dropped"])
+                
+                if "new_reg" in month_data and not month_data["new_reg"].empty:
+                    month_data["new_reg"]["Reporting Period"] = entry["label"]
+                    new_reg_dfs.append(month_data["new_reg"])
+
+    return {
+        "active": pd.concat(active_dfs, ignore_index=True) if active_dfs else pd.DataFrame(),
+        "dropped": pd.concat(dropped_dfs, ignore_index=True) if dropped_dfs else pd.DataFrame(),
+        "new_reg": pd.concat(new_reg_dfs, ignore_index=True) if new_reg_dfs else pd.DataFrame(),
+    }
+
+
+def load_selected_drm_data(selected_entries: list) -> dict:
+    """
+    Loads DRM data for multiple selected month entries and concatenates 
+    them across all individual DRM sheets.
+    """
+    sess_dfs, drm_dfs, ac_dfs, od_dfs, ne_dfs = [], [], [], [], []
+
+    for entry in selected_entries:
+        drm_path = entry.get("drm")
+        if drm_path and os.path.exists(drm_path):
+            m_drm = load_drm_data(drm_path)
+            if m_drm:
+                for key, container in [
+                    ("sess", sess_dfs),
+                    ("drm", drm_dfs),
+                    ("ac", ac_dfs),
+                    ("od", od_dfs),
+                    ("ne", ne_dfs),
+                ]:
+                    if key in m_drm and not m_drm[key].empty:
+                        m_drm[key]["Reporting Period"] = entry["label"]
+                        container.append(m_drm[key])
+
+    return {
+        "sess": pd.concat(sess_dfs, ignore_index=True) if sess_dfs else pd.DataFrame(),
+        "drm": pd.concat(drm_dfs, ignore_index=True) if drm_dfs else pd.DataFrame(),
+        "ac": pd.concat(ac_dfs, ignore_index=True) if ac_dfs else pd.DataFrame(),
+        "od": pd.concat(od_dfs, ignore_index=True) if od_dfs else pd.DataFrame(),
+        "ne": pd.concat(ne_dfs, ignore_index=True) if ne_dfs else pd.DataFrame(),
+    }
+
+
 def _find_sheet(xl: pd.ExcelFile, target: str) -> str:
     """
     Resolve a sheet name case/whitespace-insensitively against the sheets
-    actually present in `xl` (different months' exports sometimes vary
-    casing/spacing, e.g. "Active centers" vs "Active Centers"). Falls back
-    to the literal `target` — and lets pandas raise its normal error — if
-    no close match is found.
+    actually present in `xl`.
     """
     def _norm(s: str) -> str:
         return " ".join(str(s).strip().lower().split())
@@ -134,12 +236,6 @@ def _find_sheet(xl: pd.ExcelFile, target: str) -> str:
 
 
 def _apply_aliases(df: pd.DataFrame, aliases: dict) -> pd.DataFrame:
-    """
-    Rename legacy/alternate column names to their canonical name, but only
-    when the canonical column isn't already present. `aliases` maps
-    canonical_name -> [alt_name_1, alt_name_2, ...]. Used to smooth over
-    month-to-month column-naming drift in source workbooks.
-    """
     rename_map = {}
     for canonical, alternates in aliases.items():
         if canonical in df.columns:
@@ -169,7 +265,6 @@ SEQ  = list(P.values())
 BG   = "rgba(0,0,0,0)"
 GRID = "#e9ecef"
 
-# ── DRM accent colours (richer palette for client tab) ────────────────────────
 D = {
     "teal":   "#0f8a6e",
     "blue":   "#185fa5",
@@ -181,7 +276,6 @@ D = {
     "gray":   "#5f5e5a",
 }
 
-# ── Subject normalisation ─────────────────────────────────────────────────────
 SUBJECT_MAP = {
     "Conceptual Learning - Math":     "Math",
     "Conceptual Learning Math-HM":    "Math",
@@ -203,7 +297,6 @@ SUBJECT_MAP = {
     "Reading Program":                "Reading Program",
 }
 
-# ── Profession normalisation ──────────────────────────────────────────────────
 PROFESSION_MAP = {
     "corporates":                              "Corporate Professional",
     "others":                                  "Others",
@@ -248,7 +341,7 @@ PROFESSION_MAP = {
     "Trainer, manufacturers":                  "Others",
 }
 
-# ── Reference channel bucketing ───────────────────────────────────────────────
+
 def _group_ref(ref: str) -> str:
     r = str(ref).strip()
     if r in ("Internet Search", "Facebook", "Community Outreach"):
@@ -275,17 +368,12 @@ def _group_ref(ref: str) -> str:
         return "NGO / Community Org"
     return "Other"
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # VRM DATA LOADING
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_data(path: str) -> dict:
-    """
-    Returns a dict with three clean DataFrames:
-      active   — Active VT sheet, fully normalised
-      dropped  — Dropped VT sheet
-      new_reg  — Newly Registered VT sheet
-    """
     if not os.path.exists(path):
         return {}
 
@@ -388,10 +476,6 @@ SUBJECT_NORM_DRM = {
     "Guest Sessions":                 "Guest Sessions",
 }
 
-# Some months' DRM exports use different column names on the "DRM"
-# (centre-level summary) sheet. Map canonical name -> legacy/alternate
-# names; _apply_aliases() renames the first match found, only when the
-# canonical column isn't already present.
 DRM_SHEET_ALIASES = {
     "Donor Name":     ["Donor"],
     "Live_CLH":       ["Live CLH"],
@@ -401,7 +485,6 @@ DRM_SHEET_ALIASES = {
 
 @st.cache_data(show_spinner=False)
 def load_drm_data(path: str) -> dict:
-    """Load and clean all sheets from the DRM workbook."""
     if not os.path.exists(path):
         return {}
 
@@ -500,7 +583,6 @@ def _kpi(label: str, value: str, color: str, sub: str = "") -> str:
 
 
 def _drm_kpi(label: str, value: str, color: str, sub: str = "") -> str:
-    """Larger KPI card for the premium DRM client tab."""
     return (
         f"<div style='background:white;border-radius:12px;padding:18px 14px;"
         f"border-left:5px solid {color};text-align:center;"
@@ -515,7 +597,6 @@ def _drm_kpi(label: str, value: str, color: str, sub: str = "") -> str:
 
 
 def _insight_box(text: str, color: str = "#ba7517", bg: str = "#faeeda") -> str:
-    """Inline insight callout box."""
     return (
         f"<div style='background:{bg};border-left:4px solid {color};"
         f"border-radius:8px;padding:12px 16px;margin-top:12px;'>"
@@ -531,7 +612,6 @@ def _insight_box(text: str, color: str = "#ba7517", bg: str = "#faeeda") -> str:
 def render_ops_dashboard():
     st.title("🏢 Operations & Impact Command Center")
 
-    # ── Month selector — auto-detects VRM_<Month>_<Year> / DRM_<Month>_<Year> files ──
     available_months = discover_monthly_files(DATA_DIR)
 
     if not available_months:
@@ -548,56 +628,143 @@ def render_ops_dashboard():
         )
         return
 
-    month_labels = list(available_months.keys())
-    selected_month = st.selectbox(
-        "📅 Reporting Month",
-        options=month_labels,
-        index=len(month_labels) - 1,   # default to most recent month
-        key="selected_month",
+    # ─────────────────────────────────────────────────────────────────────────
+    # REPORTING PERIOD (MONTHLY VS QUARTERLY MULTI-SELECT)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    reporting_type = st.radio(
+        "📊 Reporting Type",
+        ["Monthly", "Quarterly"],
+        horizontal=True,
+        key="reporting_type",
     )
-    vrm_path = available_months[selected_month]["vrm"]
-    drm_path = available_months[selected_month]["drm"]
+
+    selected_entries = []
+    period_label = ""
+
+    if reporting_type == "Monthly":
+        month_labels = list(available_months.keys())
+
+        selected_months = st.multiselect(
+            "📅 Select Reporting Months",
+            options=month_labels,
+            default=[month_labels[-1]] if month_labels else [],
+            key="selected_months",
+            placeholder="Select one or more months",
+        )
+
+        if not selected_months:
+            st.warning("⚠️ Please select at least one month.")
+            return
+
+        selected_entries = [
+            {
+                "label": month,
+                "vrm": available_months[month]["vrm"],
+                "drm": available_months[month]["drm"],
+            }
+            for month in selected_months
+        ]
+
+        period_label = ", ".join(selected_months)
+
+    else:
+        available_quarters = discover_quarterly_files(DATA_DIR)
+
+        if not available_quarters:
+            st.error("⚠️ No quarterly data available.")
+            return
+
+        quarter_labels = list(available_quarters.keys())
+
+        selected_quarter = st.selectbox(
+            "📅 Reporting Quarter",
+            options=quarter_labels,
+            index=len(quarter_labels) - 1,
+            key="selected_quarter",
+        )
+
+        quarter_entries = available_quarters[selected_quarter]
+
+        month_options = [
+            item["label"]
+            for item in quarter_entries
+        ]
+
+        selected_months = st.multiselect(
+            "📅 Select Months",
+            options=month_options,
+            default=month_options,
+            key="selected_quarter_months",
+            placeholder="Select one or more months",
+        )
+
+        if not selected_months:
+            st.warning("⚠️ Please select at least one month.")
+            return
+
+        selected_entries = [
+            item
+            for item in quarter_entries
+            if item["label"] in selected_months
+        ]
+
+        period_label = (
+            f"{selected_quarter} — "
+            + ", ".join(selected_months)
+        )
 
     st.markdown(
         "<p style='color:gray;font-size:1.05em;margin-top:-12px;'>"
         "Volunteer Relationship Management  ·  Centre Operations  ·  Academic Health"
-        f"  —  {selected_month}</p>",
+        f"  —  {period_label}</p>",
         unsafe_allow_html=True,
     )
     st.markdown("---")
 
-    # ── Load VRM data ─────────────────────────────────────────────────────────
-    with st.spinner("Loading VRM dataset…"):
-        data = load_data(vrm_path)
+    # ═════════════════════════════════════════════════════════════════════════
+    # LOAD VRM DATA
+    # ═════════════════════════════════════════════════════════════════════════
+
+    with st.spinner(f"Loading VRM data for {period_label}…"):
+        if reporting_type == "Monthly":
+            if len(selected_entries) == 1:
+                vrm_path = selected_entries[0]["vrm"]
+                data = load_data(vrm_path)
+            else:
+                data = load_selected_vrm_data(selected_entries)
+        else:
+            data = load_selected_vrm_data(selected_entries)
 
     if not data:
-        st.error(
-            f"⚠️ Could not load the VRM file for {selected_month} "
-            f"(`{os.path.basename(vrm_path)}`)."
-        )
+        st.error(f"⚠️ Could not load VRM data for {period_label}.")
         return
 
     df_raw  = data["active"]
     dropped = data["dropped"]
     new_reg = data["new_reg"]
 
-    # ── Active-tab tracking via session_state ────────────────────────────────
-    # Streamlit doesn't expose which tab is currently open, so we use two
-    # small toggle buttons in the sidebar to let the user switch filter context.
-    # This controls which filter group is rendered in the sidebar.
     if "active_tab" not in st.session_state:
         st.session_state.active_tab = "vrm"
 
-    # ── Load DRM raw data upfront (cached) so sidebar can read its option lists
-    with st.spinner("Loading DRM data…"):
-        drm_data_raw = load_drm_data(drm_path) if drm_path else {}
+    # ═════════════════════════════════════════════════════════════════════════
+    # LOAD DRM DATA
+    # ═════════════════════════════════════════════════════════════════════════
+
+    with st.spinner(f"Loading DRM data for {period_label}…"):
+        if reporting_type == "Monthly":
+            if len(selected_entries) == 1:
+                drm_path = selected_entries[0]["drm"]
+                drm_data_raw = load_drm_data(drm_path) if drm_path else {}
+            else:
+                drm_data_raw = load_selected_drm_data(selected_entries)
+        else:
+            drm_data_raw = load_selected_drm_data(selected_entries)
 
     # ── Build sidebar — content switches based on active_tab flag ─────────────
     with st.sidebar:
         st.markdown("---")
 
-        # Two toggle buttons to switch between VRM and DRM filter sets.
-        # Clicking a button sets session_state.active_tab and triggers a rerun.
         tog1, tog2 = st.columns(2)
         if tog1.button("📋 VRM Filters", use_container_width=True,
                        type="primary" if st.session_state.active_tab == "vrm" else "secondary"):
@@ -610,7 +777,6 @@ def render_ops_dashboard():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # ── VRM FILTERS ───────────────────────────────────────────────────────
         if st.session_state.active_tab == "vrm":
             st.markdown(
                 "<div style='font-size:0.75em;font-weight:700;text-transform:uppercase;"
@@ -622,8 +788,6 @@ def render_ops_dashboard():
             _vrm_all_states   = sorted(df_raw["State"].dropna().unique())
             _vrm_all_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
 
-            # Searchable multiselect: the placeholder text and compact widget
-            # give a "search" feel — user types and the list filters live.
             sel_donors = st.multiselect(
                 "Donor",
                 options=_vrm_all_donors,
@@ -632,7 +796,6 @@ def render_ops_dashboard():
                 key="ops_donor",
             )
 
-            # Cascade: states narrow to only those linked to selected donors
             if sel_donors:
                 _linked_states = sorted(
                     df_raw[df_raw["Donor"].isin(sel_donors)]["State"].dropna().unique()
@@ -648,7 +811,6 @@ def render_ops_dashboard():
                 key="ops_state",
             )
 
-            # Cascade: subjects narrow to those in the selected donor + state combination
             _vmask = pd.Series([True] * len(df_raw), index=df_raw.index)
             if sel_donors:
                 _vmask &= df_raw["Donor"].isin(sel_donors)
@@ -669,15 +831,13 @@ def render_ops_dashboard():
                 "Applies to Volunteers, Centres and Academic Health tabs."
             )
 
-            # DRM filter placeholders (full universe, unused while on VRM mode)
-            if drm_data_raw:
+            if drm_data_raw and "sess" in drm_data_raw and not drm_data_raw["sess"].empty:
                 sel_drm_donors   = sorted(drm_data_raw["sess"]["Donor"].dropna().unique())
                 sel_drm_states   = sorted(drm_data_raw["sess"]["State"].dropna().unique())
                 sel_drm_subjects = sorted(drm_data_raw["sess"]["Subject_clean"].dropna().unique())
             else:
                 sel_drm_donors = sel_drm_states = sel_drm_subjects = []
 
-        # ── DRM FILTERS ───────────────────────────────────────────────────────
         else:
             st.markdown(
                 "<div style='font-size:0.75em;font-weight:700;text-transform:uppercase;"
@@ -685,7 +845,7 @@ def render_ops_dashboard():
                 unsafe_allow_html=True,
             )
 
-            if drm_data_raw:
+            if drm_data_raw and "sess" in drm_data_raw and not drm_data_raw["sess"].empty:
                 _sr = drm_data_raw["sess"]
                 _drm_all_donors   = sorted(_sr["Donor"].dropna().unique())
                 _drm_all_states   = sorted(_sr["State"].dropna().unique())
@@ -699,7 +859,6 @@ def render_ops_dashboard():
                     key="drm_donor",
                 )
 
-                # Cascade: states narrow to those linked to selected DRM donors
                 if sel_drm_donors:
                     _drm_linked_states = sorted(
                         _sr[_sr["Donor"].isin(sel_drm_donors)]["State"].dropna().unique()
@@ -715,7 +874,6 @@ def render_ops_dashboard():
                     key="drm_state",
                 )
 
-                # Cascade: subjects narrow to selected donor + state
                 _dmask = pd.Series([True] * len(_sr), index=_sr.index)
                 if sel_drm_donors:
                     _dmask &= _sr["Donor"].isin(sel_drm_donors)
@@ -739,12 +897,10 @@ def render_ops_dashboard():
                 st.warning("DRM file not found — filters unavailable.")
                 sel_drm_donors = sel_drm_states = sel_drm_subjects = []
 
-            # VRM filter placeholders (full universe, unused while on DRM mode)
             sel_donors   = sorted(df_raw["Donor"].dropna().unique())
             sel_states   = sorted(df_raw["State"].dropna().unique())
             sel_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
 
-    # ── Apply VRM filters to produce the working DataFrame ────────────────────
     df = df_raw[
         df_raw["Donor"].isin(sel_donors) &
         df_raw["State"].isin(sel_states) &
@@ -764,12 +920,10 @@ def render_ops_dashboard():
         "📚 Topic & SubTopic Analytics",
     ])
 
-
     # ═════════════════════════════════════════════════════════════════════════
     # TAB 1 — VOLUNTEERS
     # ═════════════════════════════════════════════════════════════════════════
     with tab_vol:
-
         if df.empty:
             st.info(
                 "🔍 No data available for the selected filters.\n\n"
@@ -780,7 +934,7 @@ def render_ops_dashboard():
         total_vols_offering = len(df)
         unique_vols         = vol_df["Volunteer id"].nunique()
         dropped_vols        = len(dropped)
-        new_vols            = new_reg["User ID"].nunique()
+        new_vols            = new_reg["User ID"].nunique() if "User ID" in new_reg.columns else 0
         active_centres      = df["Center name"].nunique()
         total_enrolled      = int(df.drop_duplicates("Center name")["Enrolled"].sum())
         total_vol_hrs       = int(df["Total hours(Comp+Offline)"].sum())
@@ -899,32 +1053,33 @@ def render_ops_dashboard():
 
         st.markdown("#### New Volunteer Registrations — Monthly Trend")
         st.caption("Source: Newly Registered VT sheet — all registrations regardless of sidebar filters.")
-        trend_df = new_reg.dropna(subset=["Date Joined"]).copy()
-        trend_df["YM"] = trend_df["Date Joined"].dt.to_period("M").astype(str)
-        monthly = (
-            trend_df.groupby("YM")["User ID"].nunique()
-            .reset_index()
-            .rename(columns={"User ID": "New Vols"})
-            .sort_values("YM")
-        )
-        fig_trend = px.area(
-            monthly, x="YM", y="New Vols",
-            markers=True, color_discrete_sequence=[P["teal"]],
-        )
-        fig_trend.update_traces(
-            line=dict(width=2.5),
-            marker=dict(size=6, color=P["teal"]),
-            fillcolor="rgba(0,148,201,0.12)",
-            hovertemplate="<b>%{x}</b><br>New Vols: %{y:,}<extra></extra>",
-        )
-        _layout(fig_trend, height=240, margin=dict(l=0, r=0, t=20, b=60))
-        fig_trend.update_layout(xaxis_title="", yaxis_title="New Volunteers")
-        fig_trend.update_xaxes(tickangle=-45, showgrid=False)
-        st.plotly_chart(fig_trend, use_container_width=True)
+        if "Date Joined" in new_reg.columns and "User ID" in new_reg.columns:
+            trend_df = new_reg.dropna(subset=["Date Joined"]).copy()
+            trend_df["YM"] = trend_df["Date Joined"].dt.to_period("M").astype(str)
+            monthly = (
+                trend_df.groupby("YM")["User ID"].nunique()
+                .reset_index()
+                .rename(columns={"User ID": "New Vols"})
+                .sort_values("YM")
+            )
+            fig_trend = px.area(
+                monthly, x="YM", y="New Vols",
+                markers=True, color_discrete_sequence=[P["teal"]],
+            )
+            fig_trend.update_traces(
+                line=dict(width=2.5),
+                marker=dict(size=6, color=P["teal"]),
+                fillcolor="rgba(0,148,201,0.12)",
+                hovertemplate="<b>%{x}</b><br>New Vols: %{y:,}<extra></extra>",
+            )
+            _layout(fig_trend, height=240, margin=dict(l=0, r=0, t=20, b=60))
+            fig_trend.update_layout(xaxis_title="", yaxis_title="New Volunteers")
+            fig_trend.update_xaxes(tickangle=-45, showgrid=False)
+            st.plotly_chart(fig_trend, use_container_width=True)
 
         st.markdown("---")
         st.markdown("#### Newly Registered Volunteers — Gender Split")
-        if "Gender" in new_reg.columns:
+        if "Gender" in new_reg.columns and "User ID" in new_reg.columns:
             gen_new = (
                 new_reg[new_reg["Gender"].isin(["Male", "Female"])]
                 .groupby("Gender")["User ID"].nunique()
@@ -1014,7 +1169,6 @@ def render_ops_dashboard():
     # TAB 2 — CENTRES
     # ═════════════════════════════════════════════════════════════════════════
     with tab_ctr:
-
         if df.empty:
             st.info(
                 "🔍 No data available for the selected filters.\n\n"
@@ -1130,10 +1284,7 @@ def render_ops_dashboard():
             fig_gen_enr.update_xaxes(tickangle=-15, showgrid=False)
             st.plotly_chart(fig_gen_enr, use_container_width=True)
         else:
-            st.info(
-                "🔍 Gender breakdown (En Boys / En Girls) isn't available in this "
-                f"month's ({selected_month}) VRM export, so this chart is skipped."
-            )
+            st.info("🔍 Gender breakdown (En Boys / En Girls) isn't available in this export.")
 
         st.markdown("---")
 
@@ -1202,7 +1353,6 @@ def render_ops_dashboard():
     # TAB 3 — ACADEMIC HEALTH
     # ═════════════════════════════════════════════════════════════════════════
     with tab_aca:
-
         if df.empty:
             st.info(
                 "🔍 No data available for the selected filters.\n\n"
@@ -1326,25 +1476,17 @@ def render_ops_dashboard():
         )
 
     # ═════════════════════════════════════════════════════════════════════════
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 4 — DRM CLIENT REPORT  (premium client-facing tab)
+    # TAB 4 — DRM CLIENT REPORT
     # ═════════════════════════════════════════════════════════════════════════
     with tab_drm:
-
-        if not drm_data_raw:
-            st.error(
-                f"⚠️ No DRM file found for **{selected_month}**. "
-                f"Place a file named like `DRM_{selected_month.replace(' ', '_')}.xlsx` "
-                f"in `{DATA_DIR}` to enable this report."
-            )
+        if not drm_data_raw or "sess" not in drm_data_raw or drm_data_raw["sess"].empty:
+            st.error(f"⚠️ No DRM file found or DRM data is empty for **{period_label}**.")
             st.stop()
 
         sess_raw = drm_data_raw["sess"]
         drm_raw  = drm_data_raw["drm"]
         od_raw   = drm_data_raw["od"]
 
-        # Apply DRM filters (sel_drm_* come from the sidebar built above)
         sess = sess_raw[
             sess_raw["Donor"].isin(sel_drm_donors) &
             sess_raw["State"].isin(sel_drm_states) &
@@ -1362,19 +1504,15 @@ def render_ops_dashboard():
             od_raw["Subject_clean"].isin(sel_drm_subjects)
         ].copy()
 
-        # ── Guard: empty result after filtering ──────────────────────────────────
         if sess.empty or drm.empty:
             st.markdown("<br>", unsafe_allow_html=True)
             st.info(
                 "🔍 **No data available for the selected filters.**\n\n"
                 "The combination of Donor, State, and Subject you selected returned no sessions "
-                "or no active centres. Try:\n"
-                "- Selecting additional donors or states\n"
-                "- Switching to **DRM Filters** in the sidebar and broadening your selection"
+                "or no active centres. Try broadening your selection in the sidebar."
             )
             st.stop()
 
-        # ── Report Header ──────────────────────────────────────────────────────
         num_states_live   = drm["State"].nunique()
         num_centres_live  = drm["Center Name"].nunique()
         num_donors_live   = drm["Donor Name"].nunique()
@@ -1389,7 +1527,7 @@ def render_ops_dashboard():
                         </h2>
                         <p style='color:rgba(255,255,255,0.82);margin:6px 0 0 0;font-size:0.95em;'>
                             Donor Relationship Management &nbsp;·&nbsp; Session Analytics
-                            &nbsp;·&nbsp; Centre Performance &nbsp;·&nbsp; {selected_month}
+                            &nbsp;·&nbsp; Centre Performance &nbsp;·&nbsp; {period_label}
                         </p>
                     </div>
                     <div style='display:flex;gap:8px;flex-wrap:wrap;'>
@@ -1406,9 +1544,6 @@ def render_ops_dashboard():
             unsafe_allow_html=True,
         )
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 1 — HEADLINE KPIs  (linked to DRM filters)
-        # ═══════════════════════════════════════════════════════════════════
         total_sessions = len(sess)
         comp_sessions  = int((sess["Session_status"] == "Completed").sum())
         off_sessions   = int((sess["Session_status"] == "Offline").sum())
@@ -1417,7 +1552,7 @@ def render_ops_dashboard():
         total_students = int(drm["Enrolled"].sum())
         avg_att_drm    = sess["Attendance%"].mean()
         total_centres  = drm["Center Name"].nunique()
-        drm_total_vols = sess["Volunteer_id"].nunique()
+        drm_total_vols = sess["Volunteer_id"].nunique() if "Volunteer_id" in sess.columns else 0
         comp_rate      = (comp_sessions + off_sessions) / total_sessions * 100 if total_sessions else 0
         canc_rate      = canc_sessions / total_sessions * 100 if total_sessions else 0
         total_girls    = int(drm["En Girls"].sum())
@@ -1432,11 +1567,10 @@ def render_ops_dashboard():
         r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns(5)
         r2c1, r2c2, r2c3, r2c4, r2c5 = st.columns(5)
 
-        # Row 1 — programme reach
         for col_w, lbl, val, color, sub in [
             (r1c1, "Active Centres",    f"{total_centres}",      D["teal"],   f"across {num_states} states"),
-            (r1c2, "Active Volunteers", f"{drm_total_vols}",     D["green"],  "unique this month"),
-            (r1c3, "Total Sessions",    f"{total_sessions:,}",   D["blue"],   "planned this month"),
+            (r1c2, "Active Volunteers", f"{drm_total_vols}",     D["green"],  "unique active"),
+            (r1c3, "Total Sessions",    f"{total_sessions:,}",   D["blue"],   "planned in period"),
             (r1c4, "Completed",         f"{comp_sessions:,}",    D["teal"],   f"{comp_rate:.1f}% rate"),
             (r1c5, "Cancelled",         f"{canc_sessions}",      D["coral"],  f"{canc_rate:.1f}% of planned"),
         ]:
@@ -1444,8 +1578,6 @@ def render_ops_dashboard():
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Row 2 — impact metrics
-        # "Enrolled Students" card now shows Boys / Girls % inline as a mini split
         boy_bar    = int(boy_pct)
         girl_bar   = int(girl_pct)
         _c_teal    = D["teal"]
@@ -1473,16 +1605,13 @@ def render_ops_dashboard():
             (r2c1, "Total CLH",       f"{total_clh_drm:,}",   D["purple"], "child learning hours"),
             (r2c3, "Avg Attendance",  f"{avg_att_drm:.1f}%",  D["amber"],  "session attendance"),
             (r2c4, "Completion Rate", f"{comp_rate:.1f}%",    D["green"],  "completed + offline"),
-            (r2c5, "Offline Sessions",f"{off_sessions}",      D["amber"],  f"{off_sessions/total_sessions*100:.1f}% of planned"),
+            (r2c5, "Offline Sessions",f"{off_sessions}",      D["amber"],  f"{(off_sessions/total_sessions*100) if total_sessions else 0:.1f}% of planned"),
         ]:
             col_w.markdown(_drm_kpi(lbl, val, color, sub), unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("---")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 2 — STATE-WISE CENTRES + ENROLLED STUDENTS
-        # ═══════════════════════════════════════════════════════════════════
         st.markdown("#### 🗺️ State-wise Centres & Enrolled Students")
 
         state_enr = (
@@ -1542,9 +1671,6 @@ def render_ops_dashboard():
 
         st.markdown("---")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 3 — STATE-WISE SESSION STATUS + ATTENDANCE
-        # ═══════════════════════════════════════════════════════════════════
         st.markdown("#### 📋 State-wise Session Status & Attendance")
 
         state_sess = (
@@ -1613,62 +1739,61 @@ def render_ops_dashboard():
 
         st.markdown("---")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 4 — CANCELLATION REASONS + STATE-WISE CLH SPLIT
-        # ═══════════════════════════════════════════════════════════════════
         st.markdown("#### ❌ Cancellations & CLH Split")
 
         col_ca1, col_ca2 = st.columns([1, 1.4])
 
         with col_ca1:
             st.markdown("##### Cancellation reasons")
-            canc_df = (
-                sess[sess["Session_status"] == "Cancelled"]
-                ["Cancel_reason"].fillna("Not specified")
-                .value_counts().reset_index()
-            )
-            canc_df.columns = ["Reason", "Count"]
-            total_canc = canc_df["Count"].sum()
+            if "Cancel_reason" in sess.columns:
+                canc_df = (
+                    sess[sess["Session_status"] == "Cancelled"]
+                    ["Cancel_reason"].fillna("Not specified")
+                    .value_counts().reset_index()
+                )
+                canc_df.columns = ["Reason", "Count"]
+                total_canc = canc_df["Count"].sum()
 
-            if not canc_df.empty:
-                fig_canc = px.pie(
-                    canc_df, names="Reason", values="Count",
-                    hole=0.52,
-                    color_discrete_sequence=[D["coral"], D["amber"], D["red"], D["purple"]],
-                )
-                fig_canc.update_traces(
-                    texttemplate="<b>%{label}</b><br>%{value}  (%{percent:.0%})",
-                    textposition="outside",
-                    hovertemplate="<b>%{label}</b><br>Sessions: %{value}<extra></extra>",
-                    pull=[0.04] * len(canc_df),
-                )
-                fig_canc.update_layout(
-                    height=300, showlegend=False,
-                    plot_bgcolor=BG, paper_bgcolor=BG,
-                    margin=dict(l=10, r=10, t=20, b=10),
-                    annotations=[dict(
-                        text=f"<b>{total_canc}</b><br>cancelled",
-                        x=0.5, y=0.5, font_size=14, showarrow=False,
-                        font=dict(color="#2d3436"),
-                    )],
-                )
-                st.plotly_chart(fig_canc, use_container_width=True)
+                if not canc_df.empty:
+                    fig_canc = px.pie(
+                        canc_df, names="Reason", values="Count",
+                        hole=0.52,
+                        color_discrete_sequence=[D["coral"], D["amber"], D["red"], D["purple"]],
+                    )
+                    fig_canc.update_traces(
+                        texttemplate="<b>%{label}</b><br>%{value}  (%{percent:.0%})",
+                        textposition="outside",
+                        hovertemplate="<b>%{label}</b><br>Sessions: %{value}<extra></extra>",
+                        pull=[0.04] * len(canc_df),
+                    )
+                    fig_canc.update_layout(
+                        height=300, showlegend=False,
+                        plot_bgcolor=BG, paper_bgcolor=BG,
+                        margin=dict(l=10, r=10, t=20, b=10),
+                        annotations=[dict(
+                            text=f"<b>{total_canc}</b><br>cancelled",
+                            x=0.5, y=0.5, font_size=14, showarrow=False,
+                            font=dict(color="#2d3436"),
+                        )],
+                    )
+                    st.plotly_chart(fig_canc, use_container_width=True)
 
-                top_reason = canc_df.iloc[0]["Reason"]
-                top_pct    = canc_df.iloc[0]["Count"] / total_canc * 100
-                st.markdown(
-                    _insight_box(
-                        f"<b>{top_pct:.0f}%</b> of cancellations are due to <b>{top_reason}</b>. "
-                        "Proactive scheduling support could recover these sessions."
-                    ),
-                    unsafe_allow_html=True,
-                )
+                    top_reason = canc_df.iloc[0]["Reason"]
+                    top_pct    = canc_df.iloc[0]["Count"] / total_canc * 100
+                    st.markdown(
+                        _insight_box(
+                            f"<b>{top_pct:.0f}%</b> of cancellations are due to <b>{top_reason}</b>. "
+                            "Proactive scheduling support could recover these sessions."
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.info("No cancellations in the current filter selection.")
             else:
-                st.info("No cancellations in the current filter selection.")
+                st.info("Cancellation reasons are not available in this dataset.")
 
         with col_ca2:
             st.markdown("##### State-wise CLH split")
-            # Stacked bar: each state bar is split by donor CLH contribution
             state_donor_clh = (
                 sess.groupby(["State", "Donor"])["Present/CLH"]
                 .sum().reset_index()
@@ -1696,121 +1821,115 @@ def render_ops_dashboard():
 
         st.markdown("---")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 5 — SESSIONS BY SUBJECT & GRADE
-        # ═══════════════════════════════════════════════════════════════════
         st.markdown("#### 📚 Subject & Grade Analytics")
 
-        # --- 5a: Sessions heatmap subject × grade ---
         col_sg1, col_sg2 = st.columns(2)
 
         with col_sg1:
             st.markdown("##### Sessions by subject & grade")
-            subj_grade_sess = (
-                sess.groupby(["Subject_clean", "Grade"])["Session_id"]
-                .count().reset_index()
-                .rename(columns={"Session_id": "Sessions"})
-            )
-            pivot_sgs = (
-                subj_grade_sess.pivot(index="Subject_clean", columns="Grade", values="Sessions")
-                .fillna(0)
-            )
-            # Sort rows by total sessions descending
-            pivot_sgs = pivot_sgs.loc[pivot_sgs.sum(axis=1).sort_values(ascending=False).index]
-            fig_sgs = px.imshow(
-                pivot_sgs,
-                color_continuous_scale=["#e1f5ee", D["teal"]],
-                aspect="auto", text_auto=".0f",
-            )
-            fig_sgs.update_traces(
-                hovertemplate="<b>%{y}</b> · Grade %{x}<br>Sessions: %{z:.0f}<extra></extra>"
-            )
-            fig_sgs.update_layout(
-                height=300, plot_bgcolor=BG, paper_bgcolor=BG,
-                margin=dict(l=0, r=0, t=20, b=0),
-                coloraxis_showscale=False,
-                xaxis=dict(title="Grade", showgrid=False),
-                yaxis=dict(title="", showgrid=False),
-                font=dict(family="Inter, Helvetica, sans-serif", size=12),
-            )
-            st.plotly_chart(fig_sgs, use_container_width=True)
+            if "Grade" in sess.columns and "Session_id" in sess.columns:
+                subj_grade_sess = (
+                    sess.groupby(["Subject_clean", "Grade"])["Session_id"]
+                    .count().reset_index()
+                    .rename(columns={"Session_id": "Sessions"})
+                )
+                pivot_sgs = (
+                    subj_grade_sess.pivot(index="Subject_clean", columns="Grade", values="Sessions")
+                    .fillna(0)
+                )
+                pivot_sgs = pivot_sgs.loc[pivot_sgs.sum(axis=1).sort_values(ascending=False).index]
+                fig_sgs = px.imshow(
+                    pivot_sgs,
+                    color_continuous_scale=["#e1f5ee", D["teal"]],
+                    aspect="auto", text_auto=".0f",
+                )
+                fig_sgs.update_traces(
+                    hovertemplate="<b>%{y}</b> · Grade %{x}<br>Sessions: %{z:.0f}<extra></extra>"
+                )
+                fig_sgs.update_layout(
+                    height=300, plot_bgcolor=BG, paper_bgcolor=BG,
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    coloraxis_showscale=False,
+                    xaxis=dict(title="Grade", showgrid=False),
+                    yaxis=dict(title="", showgrid=False),
+                    font=dict(family="Inter, Helvetica, sans-serif", size=12),
+                )
+                st.plotly_chart(fig_sgs, use_container_width=True)
 
-        # --- 5b: Subject × Grade session completion heatmap (% completed) ---
         with col_sg2:
             st.markdown("##### Session completion % — subject & grade")
-            subj_grade_comp = (
-                sess.groupby(["Subject_clean", "Grade"]).agg(
-                    Total    =("Session_id",     "count"),
-                    Done     =("Session_status", lambda x: ((x == "Completed") | (x == "Offline")).sum()),
-                ).reset_index()
-            )
-            subj_grade_comp["Comp%"] = (
-                subj_grade_comp["Done"] / subj_grade_comp["Total"].replace(0, pd.NA) * 100
-            ).round(1).fillna(0)
-            pivot_comp = (
-                subj_grade_comp.pivot(index="Subject_clean", columns="Grade", values="Comp%")
-                .fillna(0)
-            )
-            # Match row order of session heatmap
-            common_idx = [i for i in pivot_sgs.index if i in pivot_comp.index]
-            pivot_comp = pivot_comp.reindex(common_idx)
-            fig_comp = px.imshow(
-                pivot_comp,
-                color_continuous_scale=["#faeeda", D["teal"]],
-                aspect="auto", text_auto=".0f",
-                zmin=0, zmax=100,
-            )
-            fig_comp.update_traces(
-                hovertemplate="<b>%{y}</b> · Grade %{x}<br>Completion: %{z:.1f}%<extra></extra>"
-            )
-            fig_comp.update_layout(
-                height=300, plot_bgcolor=BG, paper_bgcolor=BG,
-                margin=dict(l=0, r=0, t=20, b=0),
-                coloraxis_showscale=False,
-                xaxis=dict(title="Grade", showgrid=False),
-                yaxis=dict(title="", showgrid=False),
-                font=dict(family="Inter, Helvetica, sans-serif", size=12),
-            )
-            st.plotly_chart(fig_comp, use_container_width=True)
+            if "Grade" in sess.columns and "Session_id" in sess.columns:
+                subj_grade_comp = (
+                    sess.groupby(["Subject_clean", "Grade"]).agg(
+                        Total    =("Session_id",     "count"),
+                        Done     =("Session_status", lambda x: ((x == "Completed") | (x == "Offline")).sum()),
+                    ).reset_index()
+                )
+                subj_grade_comp["Comp%"] = (
+                    subj_grade_comp["Done"] / subj_grade_comp["Total"].replace(0, pd.NA) * 100
+                ).round(1).fillna(0)
+                pivot_comp = (
+                    subj_grade_comp.pivot(index="Subject_clean", columns="Grade", values="Comp%")
+                    .fillna(0)
+                )
+                if 'pivot_sgs' in locals():
+                    common_idx = [i for i in pivot_sgs.index if i in pivot_comp.index]
+                    pivot_comp = pivot_comp.reindex(common_idx)
+                fig_comp = px.imshow(
+                    pivot_comp,
+                    color_continuous_scale=["#faeeda", D["teal"]],
+                    aspect="auto", text_auto=".0f",
+                    zmin=0, zmax=100,
+                )
+                fig_comp.update_traces(
+                    hovertemplate="<b>%{y}</b> · Grade %{x}<br>Completion: %{z:.1f}%<extra></extra>"
+                )
+                fig_comp.update_layout(
+                    height=300, plot_bgcolor=BG, paper_bgcolor=BG,
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    coloraxis_showscale=False,
+                    xaxis=dict(title="Grade", showgrid=False),
+                    yaxis=dict(title="", showgrid=False),
+                    font=dict(family="Inter, Helvetica, sans-serif", size=12),
+                )
+                st.plotly_chart(fig_comp, use_container_width=True)
 
         st.markdown("---")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 6 — CLH BY SUBJECT & GRADE
-        # ═══════════════════════════════════════════════════════════════════
         st.markdown("#### ⏱️ CLH by Subject & Grade")
 
         col_clh1, col_clh2 = st.columns([1.4, 1])
 
         with col_clh1:
             st.markdown("##### CLH heatmap — subject × grade")
-            subj_grade_clh = (
-                sess.groupby(["Subject_clean", "Grade"])["Present/CLH"]
-                .sum().reset_index()
-                .rename(columns={"Present/CLH": "CLH"})
-            )
-            pivot_clhsg = (
-                subj_grade_clh.pivot(index="Subject_clean", columns="Grade", values="CLH")
-                .fillna(0)
-            )
-            pivot_clhsg = pivot_clhsg.loc[pivot_clhsg.sum(axis=1).sort_values(ascending=False).index]
-            fig_clhsg = px.imshow(
-                pivot_clhsg,
-                color_continuous_scale=["#e6f1fb", D["blue"]],
-                aspect="auto", text_auto=".0f",
-            )
-            fig_clhsg.update_traces(
-                hovertemplate="<b>%{y}</b> · Grade %{x}<br>CLH: %{z:,.0f}<extra></extra>"
-            )
-            fig_clhsg.update_layout(
-                height=300, plot_bgcolor=BG, paper_bgcolor=BG,
-                margin=dict(l=0, r=0, t=20, b=0),
-                coloraxis_showscale=False,
-                xaxis=dict(title="Grade", showgrid=False),
-                yaxis=dict(title="", showgrid=False),
-                font=dict(family="Inter, Helvetica, sans-serif", size=12),
-            )
-            st.plotly_chart(fig_clhsg, use_container_width=True)
+            if "Grade" in sess.columns:
+                subj_grade_clh = (
+                    sess.groupby(["Subject_clean", "Grade"])["Present/CLH"]
+                    .sum().reset_index()
+                    .rename(columns={"Present/CLH": "CLH"})
+                )
+                pivot_clhsg = (
+                    subj_grade_clh.pivot(index="Subject_clean", columns="Grade", values="CLH")
+                    .fillna(0)
+                )
+                pivot_clhsg = pivot_clhsg.loc[pivot_clhsg.sum(axis=1).sort_values(ascending=False).index]
+                fig_clhsg = px.imshow(
+                    pivot_clhsg,
+                    color_continuous_scale=["#e6f1fb", D["blue"]],
+                    aspect="auto", text_auto=".0f",
+                )
+                fig_clhsg.update_traces(
+                    hovertemplate="<b>%{y}</b> · Grade %{x}<br>CLH: %{z:,.0f}<extra></extra>"
+                )
+                fig_clhsg.update_layout(
+                    height=300, plot_bgcolor=BG, paper_bgcolor=BG,
+                    margin=dict(l=0, r=0, t=20, b=0),
+                    coloraxis_showscale=False,
+                    xaxis=dict(title="Grade", showgrid=False),
+                    yaxis=dict(title="", showgrid=False),
+                    font=dict(family="Inter, Helvetica, sans-serif", size=12),
+                )
+                st.plotly_chart(fig_clhsg, use_container_width=True)
 
         with col_clh2:
             st.markdown("##### CLH by subject — total")
@@ -1840,59 +1959,54 @@ def render_ops_dashboard():
 
         st.markdown("---")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 7 — VOLUNTEER PERFORMANCE SCORECARD
-        # ═══════════════════════════════════════════════════════════════════
         st.markdown("#### 🙋 Volunteer Performance Scorecard")
 
-        vol_perf = (
-            sess.groupby(["Volunteer_id", "Teacher_name"]).agg(
-                Sessions  =("Session_id",     "count"),
-                Completed =("Session_status", lambda x: (x == "Completed").sum()),
-                CLH       =("Present/CLH",    "sum"),
-                Avg_Att   =("Attendance%",    "mean"),
-                Students  =("Total students", "sum"),
-                Subjects  =("Subject_clean",  lambda x: ", ".join(sorted(x.unique()))),
-            ).reset_index()
-        )
-        vol_perf["Comp %"]  = (vol_perf["Completed"] / vol_perf["Sessions"] * 100).round(1)
-        vol_perf["Avg_Att"] = vol_perf["Avg_Att"].round(1)
+        if {"Volunteer_id", "Teacher_name", "Session_id"}.issubset(sess.columns):
+            vol_perf = (
+                sess.groupby(["Volunteer_id", "Teacher_name"]).agg(
+                    Sessions  =("Session_id",     "count"),
+                    Completed =("Session_status", lambda x: (x == "Completed").sum()),
+                    CLH       =("Present/CLH",    "sum"),
+                    Avg_Att   =("Attendance%",    "mean"),
+                    Students  =("Total students", "sum"),
+                    Subjects  =("Subject_clean",  lambda x: ", ".join(sorted(x.unique()))),
+                ).reset_index()
+            )
+            vol_perf["Comp %"]  = (vol_perf["Completed"] / vol_perf["Sessions"] * 100).round(1)
+            vol_perf["Avg_Att"] = vol_perf["Avg_Att"].round(1)
 
-        def _flag(row):
-            if row["Comp %"] < 60:  return "🔴 At Risk"
-            if row["Comp %"] < 85:  return "🟡 Moderate"
-            return "🟢 Strong"
+            def _flag(row):
+                if row["Comp %"] < 60:  return "🔴 At Risk"
+                if row["Comp %"] < 85:  return "🟡 Moderate"
+                return "🟢 Strong"
 
-        vol_perf["Status"] = vol_perf.apply(_flag, axis=1)
-        vol_display = vol_perf[[
-            "Teacher_name", "Subjects", "Sessions", "Comp %",
-            "Avg_Att", "CLH", "Students", "Status"
-        ]].rename(columns={
-            "Teacher_name": "Volunteer",
-            "Avg_Att":      "Att %",
-        }).sort_values("CLH", ascending=False)
+            vol_perf["Status"] = vol_perf.apply(_flag, axis=1)
+            vol_display = vol_perf[[
+                "Teacher_name", "Subjects", "Sessions", "Comp %",
+                "Avg_Att", "CLH", "Students", "Status"
+            ]].rename(columns={
+                "Teacher_name": "Volunteer",
+                "Avg_Att":      "Att %",
+            }).sort_values("CLH", ascending=False)
 
-        st.dataframe(
-            vol_display,
-            use_container_width=True,
-            hide_index=True,
-            height=400,
-            column_config={
-                "CLH":    st.column_config.NumberColumn("CLH",    format="%d"),
-                "Comp %": st.column_config.ProgressColumn(
-                    "Comp %", min_value=0, max_value=100, format="%.1f%%"
-                ),
-                "Att %":  st.column_config.ProgressColumn(
-                    "Att %",  min_value=0, max_value=100, format="%.1f%%"
-                ),
-            },
-        )
+            st.dataframe(
+                vol_display,
+                use_container_width=True,
+                hide_index=True,
+                height=400,
+                column_config={
+                    "CLH":    st.column_config.NumberColumn("CLH",    format="%d"),
+                    "Comp %": st.column_config.ProgressColumn(
+                        "Comp %", min_value=0, max_value=100, format="%.1f%%"
+                    ),
+                    "Att %":  st.column_config.ProgressColumn(
+                        "Att %",  min_value=0, max_value=100, format="%.1f%%"
+                    ),
+                },
+            )
 
         st.markdown("---")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # SECTION 8 — FULL CENTRE SCORECARD TABLE
-        # ═══════════════════════════════════════════════════════════════════
         st.markdown("#### 🗂️ Full Centre Scorecard")
         st.caption(
             f"All {total_centres} active centres ranked by CLH delivered. &nbsp;"
@@ -1938,12 +2052,11 @@ def render_ops_dashboard():
             },
         )
 
-        # ── Footer ─────────────────────────────────────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown(
             f"""<div style='text-align:center;color:#b2bec3;font-size:0.75em;
                     padding:16px;border-top:1px solid #dee2e6;margin-top:8px;'>
-                eVidyaloka Programme Impact Report &nbsp;·&nbsp; {selected_month}
+                eVidyaloka Programme Impact Report &nbsp;·&nbsp; {period_label}
                 &nbsp;·&nbsp; {total_centres} centres &nbsp;·&nbsp;
                 {drm_total_vols} volunteers &nbsp;·&nbsp;
                 {total_students:,} students &nbsp;·&nbsp;
@@ -1951,6 +2064,7 @@ def render_ops_dashboard():
             </div>""",
             unsafe_allow_html=True,
         )
+
     # ═════════════════════════════════════════════════════════════════════════
     # TAB 5 — Topic & SubTopic Analytics
     # ═════════════════════════════════════════════════════════════════════════
@@ -1972,12 +2086,11 @@ def render_ops_dashboard():
         if topic_df is None:
             st.error(
                 f"Topic/SubTopic data file not found. "
-                f"Place `Topic_SubTopic_Cancelled_Offline_May2026.xlsx` in `{DATA_DIR}`."
+                f"Place `Topic_SubTopic_Cancelled_Offline_May_2026.xlsx` in `{DATA_DIR}`."
             )
         else:
             st.title("📚 Topic & SubTopic Analytics Dashboard")
 
-            # Filters in-tab (sidebar is used by VRM/DRM)
             with st.expander("📊 Filters", expanded=True):
                 fc1, fc2, fc3 = st.columns(3)
                 base_df = topic_df.copy()
@@ -2026,7 +2139,6 @@ def render_ops_dashboard():
                     if centre_filter else status_df.copy()
                 )
 
-            # KPI cards
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Total Sessions", f"{len(filtered_df):,}")
