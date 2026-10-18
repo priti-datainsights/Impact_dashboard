@@ -20,20 +20,6 @@ Sheets used (DRM)
   Offering Details     — one row per offering (grade × subject × centre)
   Active centers       — centre master with registration data
   New Enrolled student — mid-month new enrolments
-
-Column mapping (VRM new file → dashboard internal name) 
-────────────────────────────────────────────────────────
-  Volunteer ID              → vol_id
-  Volunteer Name            → vol_name
-  EV Joined Date            → joined_dt
-  Volunteer State           → res_state
-  Volunteer City            → res_city
-  Center Name               → center
-  Center State              → state
-  Offering Status           → status
-  Total Hours (Comp+Offline)→ vol_hrs
-  Attendance %              → attendance  (already float in this file)
-  En Boys / En Girls        → gender split (NEW — not in old CSV)
 """
 
 import streamlit as st
@@ -170,16 +156,19 @@ def load_selected_vrm_data(selected_entries: list) -> dict:
             month_data = load_data(vrm_path)
             if month_data:
                 if "active" in month_data and not month_data["active"].empty:
-                    month_data["active"]["Reporting Period"] = entry["label"]
-                    active_dfs.append(month_data["active"])
+                    df_act = month_data["active"].copy()
+                    df_act["Reporting Period"] = entry["label"]
+                    active_dfs.append(df_act)
                 
                 if "dropped" in month_data and not month_data["dropped"].empty:
-                    month_data["dropped"]["Reporting Period"] = entry["label"]
-                    dropped_dfs.append(month_data["dropped"])
+                    df_drp = month_data["dropped"].copy()
+                    df_drp["Reporting Period"] = entry["label"]
+                    dropped_dfs.append(df_drp)
                 
                 if "new_reg" in month_data and not month_data["new_reg"].empty:
-                    month_data["new_reg"]["Reporting Period"] = entry["label"]
-                    new_reg_dfs.append(month_data["new_reg"])
+                    df_nr = month_data["new_reg"].copy()
+                    df_nr["Reporting Period"] = entry["label"]
+                    new_reg_dfs.append(df_nr)
 
     return {
         "active": pd.concat(active_dfs, ignore_index=True) if active_dfs else pd.DataFrame(),
@@ -208,8 +197,9 @@ def load_selected_drm_data(selected_entries: list) -> dict:
                     ("ne", ne_dfs),
                 ]:
                     if key in m_drm and not m_drm[key].empty:
-                        m_drm[key]["Reporting Period"] = entry["label"]
-                        container.append(m_drm[key])
+                        df_sheet = m_drm[key].copy()
+                        df_sheet["Reporting Period"] = entry["label"]
+                        container.append(df_sheet)
 
     return {
         "sess": pd.concat(sess_dfs, ignore_index=True) if sess_dfs else pd.DataFrame(),
@@ -221,10 +211,6 @@ def load_selected_drm_data(selected_entries: list) -> dict:
 
 
 def _find_sheet(xl: pd.ExcelFile, target: str) -> str:
-    """
-    Resolve a sheet name case/whitespace-insensitively against the sheets
-    actually present in `xl`.
-    """
     def _norm(s: str) -> str:
         return " ".join(str(s).strip().lower().split())
 
@@ -379,7 +365,6 @@ def load_data(path: str) -> dict:
 
     xl = pd.ExcelFile(path)
 
-    # ── Active VT ─────────────────────────────────────────────────────────────
     active = pd.read_excel(xl, sheet_name=_find_sheet(xl, SHEET_ACTIVE))
     active.columns = active.columns.str.strip()
 
@@ -426,7 +411,6 @@ def load_data(path: str) -> dict:
         if col in active.columns:
             active[col] = pd.to_numeric(active[col], errors="coerce").fillna(0).astype(int)
 
-    # ── Dropped VT ────────────────────────────────────────────────────────────
     dropped = pd.read_excel(xl, sheet_name=_find_sheet(xl, SHEET_DROPPED))
     dropped.columns = dropped.columns.str.strip()
     if "State" in dropped.columns:
@@ -437,7 +421,6 @@ def load_data(path: str) -> dict:
             .str.strip()
         )
 
-    # ── Newly Registered VT ───────────────────────────────────────────────────
     new_reg = pd.read_excel(xl, sheet_name=_find_sheet(xl, SHEET_NEW_REG))
     new_reg.columns = new_reg.columns.str.strip()
     new_reg["Date Joined"] = pd.to_datetime(new_reg["Date Joined"], errors="coerce")
@@ -496,7 +479,6 @@ def load_drm_data(path: str) -> dict:
                 .replace("\u00a0", " ")
                 .strip())
 
-    # SESSION DUMP
     sess = pd.read_excel(xl, sheet_name=_find_sheet(xl, "SESSION DUMP"))
     sess.columns = sess.columns.str.strip()
     sess["Session_start"] = pd.to_datetime(sess["Session_start"], errors="coerce")
@@ -511,7 +493,6 @@ def load_drm_data(path: str) -> dict:
     sess["dow"]  = sess["Session_start"].dt.day_name()
     sess["hour"] = sess["Session_start"].dt.hour
 
-    # DRM (centre-level summary)
     drm = pd.read_excel(xl, sheet_name=_find_sheet(xl, "DRM"))
     drm.columns = drm.columns.str.strip()
     drm = _apply_aliases(drm, DRM_SHEET_ALIASES)
@@ -532,16 +513,13 @@ def load_drm_data(path: str) -> dict:
     drm["Girl%"]         = (drm["En Girls"]
                             / (drm["En Boys"] + drm["En Girls"]).replace(0, float("nan")) * 100).round(1)
 
-    # ACTIVE CENTERS
     ac = pd.read_excel(xl, sheet_name=_find_sheet(xl, "Active centers"))
     ac.columns = ac.columns.str.strip()
 
-    # OFFERING DETAILS
     od = pd.read_excel(xl, sheet_name=_find_sheet(xl, "Offering Details"))
     od.columns = od.columns.str.strip()
     od["Subject_clean"] = od["Subject"].str.strip().map(SUBJECT_NORM_DRM).fillna(od["Subject"])
 
-    # NEW ENROLLED STUDENT
     ne = pd.read_excel(xl, sheet_name=_find_sheet(xl, "New Enrolled student"))
     ne.columns = ne.columns.str.strip()
 
@@ -727,16 +705,9 @@ def render_ops_dashboard():
     # ═════════════════════════════════════════════════════════════════════════
 
     with st.spinner(f"Loading VRM data for {period_label}…"):
-        if reporting_type == "Monthly":
-            if len(selected_entries) == 1:
-                vrm_path = selected_entries[0]["vrm"]
-                data = load_data(vrm_path)
-            else:
-                data = load_selected_vrm_data(selected_entries)
-        else:
-            data = load_selected_vrm_data(selected_entries)
+        data = load_selected_vrm_data(selected_entries)
 
-    if not data:
+    if not data or data["active"].empty:
         st.error(f"⚠️ Could not load VRM data for {period_label}.")
         return
 
@@ -752,14 +723,7 @@ def render_ops_dashboard():
     # ═════════════════════════════════════════════════════════════════════════
 
     with st.spinner(f"Loading DRM data for {period_label}…"):
-        if reporting_type == "Monthly":
-            if len(selected_entries) == 1:
-                drm_path = selected_entries[0]["drm"]
-                drm_data_raw = load_drm_data(drm_path) if drm_path else {}
-            else:
-                drm_data_raw = load_selected_drm_data(selected_entries)
-        else:
-            drm_data_raw = load_selected_drm_data(selected_entries)
+        drm_data_raw = load_selected_drm_data(selected_entries)
 
     # ── Build sidebar — content switches based on active_tab flag ─────────────
     with st.sidebar:
