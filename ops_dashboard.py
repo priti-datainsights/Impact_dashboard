@@ -431,20 +431,6 @@ def load_data(path: str) -> dict:
     return {"active": active, "dropped": dropped, "new_reg": new_reg}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TOPIC and SubTopic DATA LOADING
-# ─────────────────────────────────────────────────────────────────────────────
-TOPIC_FILE = os.path.join(DATA_DIR, "Topic_SubTopic_Cancelled_Offline_May_2026.xlsx")
-
-@st.cache_data(show_spinner=False)
-def load_topic_data():
-    if not os.path.exists(TOPIC_FILE):
-        return None, None, None
-    topic_df = pd.read_excel(TOPIC_FILE, sheet_name="Topic-SubTopic")
-    cancelled_df = pd.read_excel(TOPIC_FILE, sheet_name="Cancelled Sessions")
-    offline_df = pd.read_excel(TOPIC_FILE, sheet_name="Offline Sessions")
-    return topic_df, cancelled_df, offline_df
-
-# ─────────────────────────────────────────────────────────────────────────────
 # DRM DATA LOADING
 # ─────────────────────────────────────────────────────────────────────────────
 SUBJECT_NORM_DRM = {
@@ -2030,106 +2016,247 @@ def render_ops_dashboard():
         )
 
     # ═════════════════════════════════════════════════════════════════════════
-    # TAB 5 — Topic & SubTopic Analytics
+    # TAB 5 — TOPIC & SUBTOPIC ANALYTICS (INTEGRATED TOPIC DASHBOARD)
     # ═════════════════════════════════════════════════════════════════════════
     with tab_top:
-        st.markdown("""
-        <style>
-        .metric-card{
-            background:#ffffff; padding:18px; border-radius:12px;
-            box-shadow:0 2px 10px rgba(0,0,0,.08);
-        }
-        [data-testid="stMetricValue"]{
-            font-size:34px; font-weight:700; color:#0f766e;
-        }
-        </style>
-        """, unsafe_allow_html=True)
+        st.markdown("### 📚 Topic & SubTopic Analytics Dashboard")
 
-        topic_df, cancelled_df, offline_df = load_topic_data()
+        uploaded_topic_file = st.file_uploader(
+            "📁 Upload Topic/SubTopic Excel File",
+            type=["xlsx", "xls"],
+            key="topic_file_uploader",
+            help="Upload the Excel file containing 'Topic-SubTopic', 'Cancelled Sessions', and 'Offline Sessions' sheets."
+        )
 
-        if topic_df is None:
-            st.error(
-                f"Topic/SubTopic data file not found. "
-                f"Place `Topic_SubTopic_Cancelled_Offline_May_2026.xlsx` in `{DATA_DIR}`."
-            )
+        if uploaded_topic_file is None:
+            st.info("👆 Please upload a Topic/SubTopic Excel file above to activate this dashboard.")
         else:
-            st.title("📚 Topic & SubTopic Analytics Dashboard")
+            @st.cache_data
+            def load_topic_uploaded_data(file):
+                try:
+                    xl = pd.ExcelFile(file)
+                    sheets = xl.sheet_names
 
-            with st.expander("📊 Filters", expanded=True):
-                fc1, fc2, fc3 = st.columns(3)
-                base_df = topic_df.copy()
+                    def _get_sheet_name(target):
+                        norm_target = " ".join(str(target).strip().lower().split())
+                        for sheet in sheets:
+                            if " ".join(str(sheet).strip().lower().split()) == norm_target:
+                                return sheet
+                        return target
 
-                with fc1:
-                    state_filter = st.multiselect(
-                        "State",
-                        sorted(base_df["state"].dropna().unique()),
-                        key="top_state",
-                    )
-                state_df = base_df[base_df["state"].isin(state_filter)] if state_filter else base_df.copy()
+                    t_sheet = _get_sheet_name("Topic-SubTopic")
+                    c_sheet = _get_sheet_name("Cancelled Sessions")
+                    o_sheet = _get_sheet_name("Offline Sessions")
 
-                with fc2:
-                    subject_filter = st.multiselect(
-                        "Subject",
-                        sorted(state_df["subject"].dropna().unique()),
-                        key="top_subject",
-                    )
-                subject_df = state_df[state_df["subject"].isin(subject_filter)] if subject_filter else state_df.copy()
+                    t_df = pd.read_excel(file, sheet_name=t_sheet) if t_sheet in sheets else pd.DataFrame()
+                    c_df = pd.read_excel(file, sheet_name=c_sheet) if c_sheet in sheets else pd.DataFrame()
+                    o_df = pd.read_excel(file, sheet_name=o_sheet) if o_sheet in sheets else pd.DataFrame()
 
-                with fc3:
-                    grade_filter = st.multiselect(
-                        "Grade",
-                        sorted(subject_df["grade"].dropna().unique()),
-                        key="top_grade",
-                    )
-                grade_df = subject_df[subject_df["grade"].isin(grade_filter)] if grade_filter else subject_df.copy()
+                    return t_df, c_df, o_df
+                except Exception as e:
+                    st.error(f"Error reading uploaded file: {e}")
+                    return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-                fc4, fc5 = st.columns(2)
-                with fc4:
-                    status_filter = st.multiselect(
-                        "Session Status",
-                        sorted(grade_df["session_status"].dropna().unique()),
-                        key="top_status",
-                    )
-                status_df = grade_df[grade_df["session_status"].isin(status_filter)] if status_filter else grade_df.copy()
+            topic_df, cancelled_df, offline_df = load_topic_uploaded_data(uploaded_topic_file)
 
-                with fc5:
-                    centre_filter = st.multiselect(
-                        "Centre",
-                        sorted(status_df["center_name"].dropna().unique()),
-                        key="top_centre",
-                    )
-                filtered_df = (
-                    status_df[status_df["center_name"].isin(centre_filter)]
-                    if centre_filter else status_df.copy()
+            if topic_df.empty:
+                st.error("The uploaded file does not contain a valid 'Topic-SubTopic' sheet or has no data.")
+            else:
+                # ── IN-TAB FILTERS ──────────────────────────────────────────
+                with st.expander("📊 Topic Filters", expanded=True):
+                    fc1, fc2, fc3 = st.columns(3)
+
+                    state_col   = "state" if "state" in topic_df.columns else "State"
+                    subject_col = "subject" if "subject" in topic_df.columns else "Subject"
+                    grade_col   = "grade" if "grade" in topic_df.columns else "Grade"
+
+                    with fc1:
+                        st_opts = sorted(topic_df[state_col].dropna().unique()) if state_col in topic_df.columns else []
+                        t_state_filter = st.multiselect("State", st_opts, key="tab5_state")
+
+                    state_df = topic_df[topic_df[state_col].isin(t_state_filter)] if t_state_filter and state_col in topic_df.columns else topic_df.copy()
+
+                    with fc2:
+                        sub_opts = sorted(state_df[subject_col].dropna().unique()) if subject_col in state_df.columns else []
+                        t_subject_filter = st.multiselect("Subject", sub_opts, key="tab5_subject")
+
+                    subject_df = state_df[state_df[subject_col].isin(t_subject_filter)] if t_subject_filter and subject_col in state_df.columns else state_df.copy()
+
+                    with fc3:
+                        grd_opts = sorted(subject_df[grade_col].dropna().unique()) if grade_col in subject_df.columns else []
+                        t_grade_filter = st.multiselect("Grade", grd_opts, key="tab5_grade")
+
+                    filtered_topic_df = subject_df[subject_df[grade_col].isin(t_grade_filter)] if t_grade_filter and grade_col in subject_df.columns else subject_df.copy()
+
+                # ── KPI METRICS ──────────────────────────────────────────────
+                total_sessions   = len(filtered_topic_df)
+                unique_topics    = filtered_topic_df["topic_name"].nunique() if "topic_name" in filtered_topic_df.columns else 0
+                unique_subtopics = filtered_topic_df["sub_topic_name"].nunique() if "sub_topic_name" in filtered_topic_df.columns else 0
+                unique_centers   = filtered_topic_df["center_id"].nunique() if "center_id" in filtered_topic_df.columns else (
+                    filtered_topic_df["center_name"].nunique() if "center_name" in filtered_topic_df.columns else 0
                 )
 
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Sessions", f"{len(filtered_df):,}")
-            with col2:
-                st.metric("Unique Topics", f"{filtered_df['topic_name'].nunique():,}")
-            with col3:
-                st.metric("Unique Subtopics", f"{filtered_df['sub_topic_name'].nunique():,}")
-            with col4:
-                st.metric("Active Centers", f"{filtered_df['center_id'].nunique():,}")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Sessions", f"{total_sessions:,}")
+                with col2:
+                    st.metric("Unique Topics", f"{unique_topics:,}")
+                with col3:
+                    st.metric("Unique Subtopics", f"{unique_subtopics:,}")
+                with col4:
+                    st.metric("Active Centers", f"{unique_centers:,}")
 
-            st.subheader("📋 Topic / Sub-topic Session Summary")
-            pivot_table = (
-                filtered_df
-                .groupby(["topic_name", "sub_topic_name"], dropna=False)
-                .agg(**{
-                    "#Sessions": ("topic_name", "count"),
-                    "#Schools": ("center_name", "nunique"),
-                })
-                .reset_index()
-                .sort_values("#Sessions", ascending=False)
-                .rename(columns={"topic_name": "Topic", "sub_topic_name": "Sub-topic"})
-            )
-            st.dataframe(pivot_table, use_container_width=True, hide_index=True, height=700)
+                st.markdown("---")
 
-            st.download_button(
-                "📥 Download Topic Data",
-                filtered_df.to_csv(index=False),
-                file_name="topic_data.csv",
-                key="top_download",
-            )
+                # ── DASHBOARD SUB-TABS ────────────────────────────────────────
+                top_tab1, top_tab2, top_tab3 = st.tabs([
+                    "📋 Topic Analysis",
+                    "❌ Cancelled Sessions",
+                    "⏸️ Offline Sessions"
+                ])
+
+                # 1. TOPIC ANALYSIS
+                with top_tab1:
+                    if "topic_name" in filtered_topic_df.columns:
+                        st.subheader("Top Topics")
+                        topic_summary = (
+                            filtered_topic_df
+                            .groupby("topic_name")
+                            .size()
+                            .reset_index(name="Sessions")
+                            .sort_values("Sessions", ascending=False)
+                            .head(20)
+                        )
+                        fig = px.bar(
+                            topic_summary, x="Sessions", y="topic_name",
+                            orientation="h", title="Top 20 Topics"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    if "sub_topic_name" in filtered_topic_df.columns:
+                        st.subheader("Top Sub Topics")
+                        subtopic_summary = (
+                            filtered_topic_df
+                            .groupby("sub_topic_name")
+                            .size()
+                            .reset_index(name="Sessions")
+                            .sort_values("Sessions", ascending=False)
+                            .head(20)
+                        )
+                        fig2 = px.bar(
+                            subtopic_summary, x="Sessions", y="sub_topic_name",
+                            orientation="h", title="Top 20 Sub Topics"
+                        )
+                        st.plotly_chart(fig2, use_container_width=True)
+
+                    if subject_col in filtered_topic_df.columns:
+                        st.subheader("Subject Distribution")
+                        subject_chart = (
+                            filtered_topic_df
+                            .groupby(subject_col)
+                            .size()
+                            .reset_index(name="Count")
+                        )
+                        fig3 = px.pie(
+                            subject_chart, names=subject_col, values="Count"
+                        )
+                        st.plotly_chart(fig3, use_container_width=True)
+
+                # 2. CANCELLED SESSIONS
+                with top_tab2:
+                    st.subheader("Cancelled Session Analysis")
+                    if not cancelled_df.empty:
+                        st.metric("Total Cancelled Sessions", f"{len(cancelled_df):,}")
+
+                        cancel_reason_col = (
+                            "cancel_reason" if "cancel_reason" in cancelled_df.columns else (
+                                "Cancel_reason" if "Cancel_reason" in cancelled_df.columns else None
+                            )
+                        )
+                        if cancel_reason_col:
+                            cancel_chart = (
+                                cancelled_df
+                                .groupby(cancel_reason_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                                .head(15)
+                            )
+                            fig4 = px.bar(
+                                cancel_chart, x="Count", y=cancel_reason_col,
+                                orientation="h", title="Cancellation Reasons"
+                            )
+                            st.plotly_chart(fig4, use_container_width=True)
+
+                        canc_state_col = "State" if "State" in cancelled_df.columns else (
+                            "state" if "state" in cancelled_df.columns else None
+                        )
+                        if canc_state_col:
+                            state_cancel = (
+                                cancelled_df
+                                .groupby(canc_state_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                            )
+                            fig5 = px.bar(
+                                state_cancel, x=canc_state_col, y="Count",
+                                title="Cancelled Sessions by State"
+                            )
+                            st.plotly_chart(fig5, use_container_width=True)
+                    else:
+                        st.info("No cancelled sessions data found in the uploaded file.")
+
+                # 3. OFFLINE SESSIONS
+                with top_tab3:
+                    st.subheader("Offline Session Analysis")
+                    if not offline_df.empty:
+                        st.metric("Total Offline Sessions", f"{len(offline_df):,}")
+
+                        offline_reason_col = (
+                            "Offline reason" if "Offline reason" in offline_df.columns else (
+                                "offline_reason" if "offline_reason" in offline_df.columns else None
+                            )
+                        )
+                        if offline_reason_col:
+                            offline_reason = (
+                                offline_df
+                                .groupby(offline_reason_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                            )
+                            fig6 = px.bar(
+                                offline_reason, x="Count", y=offline_reason_col,
+                                orientation="h", title="Offline Reasons"
+                            )
+                            st.plotly_chart(fig6, use_container_width=True)
+
+                        off_state_col = "State" if "State" in offline_df.columns else (
+                            "state" if "state" in offline_df.columns else None
+                        )
+                        if off_state_col:
+                            state_offline = (
+                                offline_df
+                                .groupby(off_state_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                            )
+                            fig7 = px.bar(
+                                state_offline, x=off_state_col, y="Count",
+                                title="Offline Sessions by State"
+                            )
+                            st.plotly_chart(fig7, use_container_width=True)
+                    else:
+                        st.info("No offline sessions data found in the uploaded file.")
+
+                # ── EXPORT DATA ──────────────────────────────────────────────
+                st.markdown("---")
+                st.download_button(
+                    "📥 Download Filtered Topic Data",
+                    filtered_topic_df.to_csv(index=False),
+                    file_name=f"filtered_{uploaded_topic_file.name.replace('.xlsx', '.csv')}",
+                    mime="text/csv",
+                    key="download_topic_csv"
+                )
