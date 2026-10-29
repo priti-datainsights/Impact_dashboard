@@ -920,7 +920,7 @@ def render_ops_dashboard():
                 if sel_drm_donors:
                     _dmask &= _sr["Donor"].isin(sel_drm_donors)
                 if sel_drm_states:
-                    _dmask &= _sr["State"].isin(sel_states)
+                    _dmask &= _sr["State"].isin(_drm_linked_states)
                 _drm_linked_subjects = sorted(_sr[_dmask]["Subject_clean"].dropna().unique())
 
                 sel_drm_subjects = st.multiselect(
