@@ -1633,4 +1633,895 @@ def render_ops_dashboard():
                     f"<div style='width:{boy_bar}%;background:{_c_blue};'></div>"
                     f"<div style='width:{girl_bar}%;background:{_c_coral};'></div>"
                     f"</div>"
-                    f"<div style='display:flex;justify-content:center;gap:14px;
+                    f"<div style='display:flex;justify-content:center;gap:14px;font-size:0.68em;color:#636e72;'>"
+                    f"<span>&#128102; Boys {boy_pct:.0f}%</span><span>&#128103; Girls {girl_pct:.0f}%</span>"
+                    f"</div></div>"
+                )
+                r2c2.markdown(gender_card, unsafe_allow_html=True)
+
+                for col_w, lbl, val, color, sub in [
+                    (r2c1, "Total CLH",       f"{total_clh_drm:,}",   D["purple"], "child learning hours"),
+                    (r2c3, "Avg Attendance",  f"{avg_att_drm:.1f}%",  D["amber"],  "session attendance"),
+                    (r2c4, "Completion Rate", f"{comp_rate:.1f}%",    D["green"],  "completed + offline"),
+                    (r2c5, "Offline Sessions",f"{off_sessions}",      D["amber"],  f"{(off_sessions/total_sessions*100) if total_sessions else 0:.1f}% of planned"),
+                ]:
+                    col_w.markdown(_drm_kpi(lbl, val, color, sub), unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("---")
+
+                st.markdown("#### 🗺️ State-wise Centres & Enrolled Students")
+
+                state_enr = (
+                    drm.groupby("State").agg(
+                        Centres  =("Center Name",    "count"),
+                        Enrolled =("Enrolled",       "sum"),
+                        Boys     =("En Boys",        "sum"),
+                        Girls    =("En Girls",       "sum"),
+                        CLH      =("Live_CLH",       "sum"),
+                        Vols     =("Live Volunteers","sum"),
+                    ).reset_index()
+                )
+                state_enr["Girl%"] = (
+                    state_enr["Girls"] / (state_enr["Boys"] + state_enr["Girls"]).replace(0, pd.NA) * 100
+                ).round(1).fillna(0)
+                state_enr = state_enr.sort_values("Enrolled", ascending=True)
+
+                col_se1, col_se2 = st.columns(2)
+
+                with col_se1:
+                    st.markdown("##### Centres per state")
+                    fig_sc = px.bar(
+                        state_enr, x="Centres", y="State",
+                        orientation="h", text="Centres",
+                        color="Centres",
+                        color_continuous_scale=[[0, "#cce0f5"], [1, D["blue"]]],
+                        hover_data={"Enrolled": ":,", "Vols": True},
+                    )
+                    fig_sc.update_traces(textposition="outside", marker_line_width=0,
+                                         hovertemplate="<b>%{y}</b><br>Centres: %{x}<br>Enrolled: %{customdata[0]:,}<extra></extra>")
+                    fig_sc.update_coloraxes(showscale=False)
+                    _layout(fig_sc, height=280, margin=dict(l=0, r=50, t=10, b=0))
+                    fig_sc.update_layout(xaxis_title="Centres", yaxis_title="")
+                    fig_sc.update_xaxes(showgrid=True, gridcolor=GRID)
+                    fig_sc.update_yaxes(showgrid=False)
+                    st.plotly_chart(fig_sc, use_container_width=True)
+
+                with col_se2:
+                    st.markdown("##### Enrolled students per state — boys vs girls")
+                    state_gen_melt = state_enr.melt(
+                        id_vars="State", value_vars=["Boys","Girls"],
+                        var_name="Gender", value_name="Students"
+                    )
+                    fig_sgen = px.bar(
+                        state_gen_melt, x="Students", y="State",
+                        color="Gender", barmode="stack", orientation="h",
+                        text="Students",
+                        color_discrete_map={"Boys": D["blue"], "Girls": D["coral"]},
+                    )
+                    fig_sgen.update_traces(textposition="inside", texttemplate="%{text:,}",
+                                           hovertemplate="<b>%{y}</b> · %{fullData.name}: %{x:,}<extra></extra>")
+                    _layout(fig_sgen, height=280, legend_bottom=True, margin=dict(l=0, r=0, t=10, b=50))
+                    fig_sgen.update_layout(xaxis_title="Enrolled Students", yaxis_title="")
+                    fig_sgen.update_xaxes(showgrid=True, gridcolor=GRID)
+                    fig_sgen.update_yaxes(showgrid=False)
+                    st.plotly_chart(fig_sgen, use_container_width=True)
+
+                st.markdown("---")
+
+                st.markdown("#### 📋 State-wise Session Status & Attendance")
+
+                state_sess = (
+                    sess.groupby("State").agg(
+                        Completed =("Session_status", lambda x: (x == "Completed").sum()),
+                        Offline   =("Session_status", lambda x: (x == "Offline").sum()),
+                        Cancelled =("Session_status", lambda x: (x == "Cancelled").sum()),
+                        Attendance=("Attendance%",    "mean"),
+                        CLH       =("Present/CLH",    "sum"),
+                    ).reset_index()
+                )
+                state_sess["Total"] = state_sess["Completed"] + state_sess["Offline"] + state_sess["Cancelled"]
+                state_sess["Comp%"] = (
+                    (state_sess["Completed"] + state_sess["Offline"])
+                    / state_sess["Total"].replace(0, pd.NA) * 100
+                ).round(1).fillna(0)
+                state_sess = state_sess.sort_values("Total", ascending=True)
+
+                col_ss1, col_ss2 = st.columns([1.5, 1])
+
+                with col_ss1:
+                    st.markdown("##### Session status by state")
+                    state_melt = state_sess.melt(
+                        id_vars=["State", "Attendance"],
+                        value_vars=["Completed", "Offline", "Cancelled"],
+                        var_name="Status", value_name="Sessions"
+                    )
+                    fig_sstat = px.bar(
+                        state_melt, x="Sessions", y="State",
+                        color="Status", barmode="stack", orientation="h",
+                        text="Sessions",
+                        color_discrete_map={
+                            "Completed": D["teal"],
+                            "Offline":   D["amber"],
+                            "Cancelled": D["red"],
+                        },
+                        category_orders={"State": state_sess["State"].tolist()},
+                    )
+                    fig_sstat.update_traces(textposition="inside", texttemplate="%{text}",
+                                            hovertemplate="<b>%{y}</b><br>%{fullData.name}: %{x}<extra></extra>")
+                    _layout(fig_sstat, height=320, legend_bottom=True, margin=dict(l=0, r=0, t=10, b=50))
+                    fig_sstat.update_layout(xaxis_title="Sessions", yaxis_title="")
+                    fig_sstat.update_xaxes(showgrid=True, gridcolor=GRID)
+                    fig_sstat.update_yaxes(showgrid=False)
+                    st.plotly_chart(fig_sstat, use_container_width=True)
+
+                with col_ss2:
+                    st.markdown("##### Avg attendance % by state")
+                    fig_satt = px.bar(
+                        state_sess.sort_values("Attendance", ascending=True),
+                        x="Attendance", y="State",
+                        orientation="h",
+                        text=state_sess.sort_values("Attendance", ascending=True)["Attendance"].round(1).astype(str) + "%",
+                        color="Attendance",
+                        color_continuous_scale=["#e17055", D["amber"], D["teal"]],
+                        range_color=[60, 100],
+                    )
+                    fig_satt.update_traces(textposition="outside", marker_line_width=0,
+                                           hovertemplate="<b>%{y}</b><br>Attendance: %{x:.1f}%<extra></extra>")
+                    fig_satt.update_coloraxes(showscale=False)
+                    _layout(fig_satt, height=320, margin=dict(l=0, r=70, t=10, b=0))
+                    fig_satt.update_layout(xaxis_title="Avg Attendance %", yaxis_title="",
+                                           xaxis=dict(range=[50, 115], ticksuffix="%", showgrid=True, gridcolor=GRID))
+                    fig_satt.update_yaxes(showgrid=False)
+                    st.plotly_chart(fig_satt, use_container_width=True)
+
+                st.markdown("---")
+
+                st.markdown("#### ❌ Cancellations & CLH Split")
+
+                col_ca1, col_ca2 = st.columns([1, 1.4])
+
+                with col_ca1:
+                    st.markdown("##### Cancellation reasons")
+                    if "Cancel_reason" in sess.columns:
+                        canc_df = (
+                            sess[sess["Session_status"] == "Cancelled"]
+                            ["Cancel_reason"].fillna("Not specified")
+                            .value_counts().reset_index()
+                        )
+                        canc_df.columns = ["Reason", "Count"]
+                        total_canc = canc_df["Count"].sum()
+
+                        if not canc_df.empty:
+                            fig_canc = px.pie(
+                                canc_df, names="Reason", values="Count",
+                                hole=0.52,
+                                color_discrete_sequence=[D["coral"], D["amber"], D["red"], D["purple"]],
+                            )
+                            fig_canc.update_traces(
+                                texttemplate="<b>%{label}</b><br>%{value}  (%{percent:.0%})",
+                                textposition="outside",
+                                hovertemplate="<b>%{label}</b><br>Sessions: %{value}<extra></extra>",
+                                pull=[0.04] * len(canc_df),
+                            )
+                            fig_canc.update_layout(
+                                height=300, showlegend=False,
+                                plot_bgcolor=BG, paper_bgcolor=BG,
+                                margin=dict(l=10, r=10, t=20, b=10),
+                                annotations=[dict(
+                                    text=f"<b>{total_canc}</b><br>cancelled",
+                                    x=0.5, y=0.5, font_size=14, showarrow=False,
+                                    font=dict(color="#2d3436"),
+                                )],
+                            )
+                            st.plotly_chart(fig_canc, use_container_width=True)
+
+                            top_reason = canc_df.iloc[0]["Reason"]
+                            top_pct    = canc_df.iloc[0]["Count"] / total_canc * 100
+                            st.markdown(
+                                _insight_box(
+                                    f"<b>{top_pct:.0f}%</b> of cancellations are due to <b>{top_reason}</b>. "
+                                    "Proactive scheduling support could recover these sessions."
+                                ),
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.info("No cancellations in the current filter selection.")
+                    else:
+                        st.info("Cancellation reasons are not available in this dataset.")
+
+                with col_ca2:
+                    st.markdown("##### State-wise CLH split")
+                    state_donor_clh = (
+                        sess.groupby(["State", "Donor"])["Present/CLH"]
+                        .sum().reset_index()
+                        .rename(columns={"Present/CLH": "CLH"})
+                    )
+                    state_totals = state_donor_clh.groupby("State")["CLH"].sum().sort_values(ascending=True)
+                    state_order  = state_totals.index.tolist()
+
+                    fig_sclh = px.bar(
+                        state_donor_clh, x="CLH", y="State",
+                        color="Donor", barmode="stack", orientation="h",
+                        text="CLH",
+                        color_discrete_sequence=[D["blue"], D["teal"], D["purple"], D["amber"], D["gray"]],
+                        category_orders={"State": state_order},
+                    )
+                    fig_sclh.update_traces(
+                        texttemplate="%{text:,}", textposition="inside",
+                        hovertemplate="<b>%{y}</b> · %{fullData.name}<br>CLH: %{x:,}<extra></extra>",
+                    )
+                    _layout(fig_sclh, height=300, legend_bottom=True, margin=dict(l=0, r=0, t=10, b=50))
+                    fig_sclh.update_layout(xaxis_title="Child Learning Hours", yaxis_title="")
+                    fig_sclh.update_xaxes(showgrid=True, gridcolor=GRID)
+                    fig_sclh.update_yaxes(showgrid=False)
+                    st.plotly_chart(fig_sclh, use_container_width=True)
+
+                st.markdown("---")
+
+                st.markdown("#### 📚 Subject & Grade Analytics")
+
+                col_sg1, col_sg2 = st.columns(2)
+
+                with col_sg1:
+                    st.markdown("##### Sessions by subject & grade")
+                    if "Grade" in sess.columns and "Session_id" in sess.columns:
+                        subj_grade_sess = (
+                            sess.groupby(["Subject_clean", "Grade"])["Session_id"]
+                            .count().reset_index()
+                            .rename(columns={"Session_id": "Sessions"})
+                        )
+                        pivot_sgs = (
+                            subj_grade_sess.pivot(index="Subject_clean", columns="Grade", values="Sessions")
+                            .fillna(0)
+                        )
+                        pivot_sgs = pivot_sgs.loc[pivot_sgs.sum(axis=1).sort_values(ascending=False).index]
+                        fig_sgs = px.imshow(
+                            pivot_sgs,
+                            color_continuous_scale=["#e1f5ee", D["teal"]],
+                            aspect="auto", text_auto=".0f",
+                        )
+                        fig_sgs.update_traces(
+                            hovertemplate="<b>%{y}</b> · Grade %{x}<br>Sessions: %{z:.0f}<extra></extra>"
+                        )
+                        fig_sgs.update_layout(
+                            height=300, plot_bgcolor=BG, paper_bgcolor=BG,
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            coloraxis_showscale=False,
+                            xaxis=dict(title="Grade", showgrid=False),
+                            yaxis=dict(title="", showgrid=False),
+                            font=dict(family="Inter, Helvetica, sans-serif", size=12),
+                        )
+                        st.plotly_chart(fig_sgs, use_container_width=True)
+
+                with col_sg2:
+                    st.markdown("##### Session completion % — subject & grade")
+                    if "Grade" in sess.columns and "Session_id" in sess.columns:
+                        subj_grade_comp = (
+                            sess.groupby(["Subject_clean", "Grade"]).agg(
+                                Total    =("Session_id",     "count"),
+                                Done     =("Session_status", lambda x: ((x == "Completed") | (x == "Offline")).sum()),
+                            ).reset_index()
+                        )
+                        subj_grade_comp["Comp%"] = (
+                            subj_grade_comp["Done"] / subj_grade_comp["Total"].replace(0, pd.NA) * 100
+                        ).round(1).fillna(0)
+                        pivot_comp = (
+                            subj_grade_comp.pivot(index="Subject_clean", columns="Grade", values="Comp%")
+                            .fillna(0)
+                        )
+                        if 'pivot_sgs' in locals():
+                            common_idx = [i for i in pivot_sgs.index if i in pivot_comp.index]
+                            pivot_comp = pivot_comp.reindex(common_idx)
+                        fig_comp = px.imshow(
+                            pivot_comp,
+                            color_continuous_scale=["#faeeda", D["teal"]],
+                            aspect="auto", text_auto=".0f",
+                            zmin=0, zmax=100,
+                        )
+                        fig_comp.update_traces(
+                            hovertemplate="<b>%{y}</b> · Grade %{x}<br>Completion: %{z:.1f}%<extra></extra>"
+                        )
+                        fig_comp.update_layout(
+                            height=300, plot_bgcolor=BG, paper_bgcolor=BG,
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            coloraxis_showscale=False,
+                            xaxis=dict(title="Grade", showgrid=False),
+                            yaxis=dict(title="", showgrid=False),
+                            font=dict(family="Inter, Helvetica, sans-serif", size=12),
+                        )
+                        st.plotly_chart(fig_comp, use_container_width=True)
+
+                st.markdown("---")
+
+                st.markdown("#### ⏱️ CLH by Subject & Grade")
+
+                col_clh1, col_clh2 = st.columns([1.4, 1])
+
+                with col_clh1:
+                    st.markdown("##### CLH heatmap — subject × grade")
+                    if "Grade" in sess.columns:
+                        subj_grade_clh = (
+                            sess.groupby(["Subject_clean", "Grade"])["Present/CLH"]
+                            .sum().reset_index()
+                            .rename(columns={"Present/CLH": "CLH"})
+                        )
+                        pivot_clhsg = (
+                            subj_grade_clh.pivot(index="Subject_clean", columns="Grade", values="CLH")
+                            .fillna(0)
+                        )
+                        pivot_clhsg = pivot_clhsg.loc[pivot_clhsg.sum(axis=1).sort_values(ascending=False).index]
+                        fig_clhsg = px.imshow(
+                            pivot_clhsg,
+                            color_continuous_scale=["#e6f1fb", D["blue"]],
+                            aspect="auto", text_auto=".0f",
+                        )
+                        fig_clhsg.update_traces(
+                            hovertemplate="<b>%{y}</b> · Grade %{x}<br>CLH: %{z:,.0f}<extra></extra>"
+                        )
+                        fig_clhsg.update_layout(
+                            height=300, plot_bgcolor=BG, paper_bgcolor=BG,
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            coloraxis_showscale=False,
+                            xaxis=dict(title="Grade", showgrid=False),
+                            yaxis=dict(title="", showgrid=False),
+                            font=dict(family="Inter, Helvetica, sans-serif", size=12),
+                        )
+                        st.plotly_chart(fig_clhsg, use_container_width=True)
+
+                with col_clh2:
+                    st.markdown("##### CLH by subject — total")
+                    clh_by_subj = (
+                        sess.groupby("Subject_clean")["Present/CLH"]
+                        .sum().reset_index()
+                        .rename(columns={"Present/CLH": "CLH"})
+                        .sort_values("CLH", ascending=True)
+                    )
+                    fig_clhs = px.bar(
+                        clh_by_subj, x="CLH", y="Subject_clean",
+                        orientation="h", text="CLH",
+                        color="CLH",
+                        color_continuous_scale=[[0, "#cce0f5"], [1, D["blue"]]],
+                    )
+                    fig_clhs.update_traces(
+                        texttemplate="%{text:,}", textposition="outside",
+                        marker_line_width=0,
+                        hovertemplate="<b>%{y}</b><br>CLH: %{x:,}<extra></extra>",
+                    )
+                    fig_clhs.update_coloraxes(showscale=False)
+                    _layout(fig_clhs, height=300, margin=dict(l=0, r=70, t=20, b=0))
+                    fig_clhs.update_layout(xaxis_title="Child Learning Hours", yaxis_title="")
+                    fig_clhs.update_xaxes(showgrid=True, gridcolor=GRID)
+                    fig_clhs.update_yaxes(showgrid=False)
+                    st.plotly_chart(fig_clhs, use_container_width=True)
+
+                st.markdown("---")
+
+                st.markdown("#### 🙋 Volunteer Performance Scorecard")
+
+                if {"Volunteer_id", "Teacher_name", "Session_id"}.issubset(sess.columns):
+                    vol_perf = (
+                        sess.groupby(["Volunteer_id", "Teacher_name"]).agg(
+                            Sessions  =("Session_id",     "count"),
+                            Completed =("Session_status", lambda x: (x == "Completed").sum()),
+                            CLH       =("Present/CLH",    "sum"),
+                            Avg_Att   =("Attendance%",    "mean"),
+                            Students  =("Total students", "sum"),
+                            Subjects  =("Subject_clean",  lambda x: ", ".join(sorted(x.unique()))),
+                        ).reset_index()
+                    )
+                    vol_perf["Comp %"]  = (vol_perf["Completed"] / vol_perf["Sessions"] * 100).round(1)
+                    vol_perf["Avg_Att"] = vol_perf["Avg_Att"].round(1)
+
+                    def _flag(row):
+                        if row["Comp %"] < 60:  return "🔴 At Risk"
+                        if row["Comp %"] < 85:  return "🟡 Moderate"
+                        return "🟢 Strong"
+
+                    vol_perf["Status"] = vol_perf.apply(_flag, axis=1)
+                    vol_display = vol_perf[[
+                        "Teacher_name", "Subjects", "Sessions", "Comp %",
+                        "Avg_Att", "CLH", "Students", "Status"
+                    ]].rename(columns={
+                        "Teacher_name": "Volunteer",
+                        "Avg_Att":      "Att %",
+                    }).sort_values("CLH", ascending=False)
+
+                    st.dataframe(
+                        vol_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=400,
+                        column_config={
+                            "CLH":    st.column_config.NumberColumn("CLH",    format="%d"),
+                            "Comp %": st.column_config.ProgressColumn(
+                                "Comp %", min_value=0, max_value=100, format="%.1f%%"
+                            ),
+                            "Att %":  st.column_config.ProgressColumn(
+                                "Att %",  min_value=0, max_value=100, format="%.1f%%"
+                            ),
+                        },
+                    )
+
+                st.markdown("---")
+
+                st.markdown("#### 🗂️ Full Centre Scorecard")
+                st.caption(
+                    f"All {total_centres} active centres ranked by CLH delivered. &nbsp;"
+                    "🟢 ≥ 90% completion &nbsp; 🟡 70–90% &nbsp; 🔴 < 70% &nbsp;|&nbsp; "
+                    "Click any column header to re-sort."
+                )
+                drm_display = drm[[
+                    "Center Name", "State", "Donor Name",
+                    "Live Volunteers", "Planned", "Completed", "Offline", "Cancelled",
+                    "Completion%", "Cancellation%",
+                    "Live_CLH", "Enrolled", "En Boys", "En Girls",
+                    "Attendance %", "Girl%"
+                ]].copy().rename(columns={
+                    "Donor Name":     "Donor",
+                    "Live Volunteers":"Vols",
+                    "Completion%":    "Comp %",
+                    "Cancellation%":  "Canc %",
+                    "Live_CLH":       "CLH",
+                    "Attendance %":   "Att %",
+                    "Girl%":          "Girl %",
+                })
+                drm_display["Att %"]  = drm_display["Att %"].round(1)
+                drm_display["Comp %"] = drm_display["Comp %"].round(1)
+                drm_display["Girl %"] = drm_display["Girl %"].round(1)
+                drm_display["Canc %"] = drm_display["Canc %"].round(1)
+                drm_display = drm_display.sort_values("CLH", ascending=False)
+
+                st.dataframe(
+                    drm_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=520,
+                    column_config={
+                        "Comp %": st.column_config.ProgressColumn(
+                            "Comp %", min_value=0, max_value=100, format="%.1f%%"
+                        ),
+                        "Att %":  st.column_config.ProgressColumn(
+                            "Att %",  min_value=0, max_value=100, format="%.1f%%"
+                        ),
+                        "CLH":    st.column_config.NumberColumn("CLH",    format="%d"),
+                        "Girl %": st.column_config.NumberColumn("Girl %", format="%.1f%%"),
+                        "Canc %": st.column_config.NumberColumn("Canc %", format="%.1f%%"),
+                    },
+                )
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown(
+                    f"""<div style='text-align:center;color:#b2bec3;font-size:0.75em;
+                            padding:16px;border-top:1px solid #dee2e6;margin-top:8px;'>
+                        eVidyaloka Programme Impact Report &nbsp;·&nbsp; {period_label}
+                        &nbsp;·&nbsp; {total_centres} centres &nbsp;·&nbsp;
+                        {drm_total_vols} volunteers &nbsp;·&nbsp;
+                        {total_students:,} students &nbsp;·&nbsp;
+                        {total_clh_drm:,} child learning hours
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # TAB 5 — TOPIC & SUBTOPIC ANALYTICS (INTEGRATED TOPIC DASHBOARD)
+    # ═════════════════════════════════════════════════════════════════════════
+    with tab_top:
+        st.markdown("### 📚 Topic & SubTopic Analytics Dashboard")
+
+        uploaded_topic_file = st.file_uploader(
+            "📁 Upload Topic/SubTopic Excel File",
+            type=["xlsx", "xls"],
+            key="topic_file_uploader",
+            help="Upload the Excel file containing 'Topic-SubTopic', 'Cancelled Sessions', and 'Offline Sessions' sheets."
+        )
+
+        if uploaded_topic_file is None:
+            st.info("👆 Please upload a Topic/SubTopic Excel file above to activate this dashboard.")
+        else:
+            @st.cache_data
+            def load_topic_uploaded_data(file):
+                try:
+                    xl = pd.ExcelFile(file)
+                    sheets = xl.sheet_names
+
+                    def _get_sheet_name(target):
+                        norm_target = " ".join(str(target).strip().lower().split())
+                        for sheet in sheets:
+                            if " ".join(str(sheet).strip().lower().split()) == norm_target:
+                                return sheet
+                        return target
+
+                    t_sheet = _get_sheet_name("Topic-SubTopic")
+                    c_sheet = _get_sheet_name("Cancelled Sessions")
+                    o_sheet = _get_sheet_name("Offline Sessions")
+
+                    t_df = pd.read_excel(file, sheet_name=t_sheet) if t_sheet in sheets else pd.DataFrame()
+                    c_df = pd.read_excel(file, sheet_name=c_sheet) if c_sheet in sheets else pd.DataFrame()
+                    o_df = pd.read_excel(file, sheet_name=o_sheet) if o_sheet in sheets else pd.DataFrame()
+
+                    return t_df, c_df, o_df
+                except Exception as e:
+                    st.error(f"Error reading uploaded file: {e}")
+                    return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+            topic_df, cancelled_df, offline_df = load_topic_uploaded_data(uploaded_topic_file)
+
+            if topic_df.empty:
+                st.error("The uploaded file does not contain a valid 'Topic-SubTopic' sheet or has no data.")
+            else:
+                # ── IN-TAB FILTERS ──────────────────────────────────────────
+                with st.expander("📊 Topic Filters", expanded=True):
+                    fc1, fc2, fc3 = st.columns(3)
+
+                    state_col   = "state" if "state" in topic_df.columns else "State"
+                    subject_col = "subject" if "subject" in topic_df.columns else "Subject"
+                    grade_col   = "grade" if "grade" in topic_df.columns else "Grade"
+
+                    with fc1:
+                        st_opts = sorted(topic_df[state_col].dropna().unique()) if state_col in topic_df.columns else []
+                        t_state_filter = st.multiselect("State", st_opts, key="tab5_state")
+
+                    state_df = topic_df[topic_df[state_col].isin(t_state_filter)] if t_state_filter and state_col in topic_df.columns else topic_df.copy()
+
+                    with fc2:
+                        sub_opts = sorted(state_df[subject_col].dropna().unique()) if subject_col in state_df.columns else []
+                        t_subject_filter = st.multiselect("Subject", sub_opts, key="tab5_subject")
+
+                    subject_df = state_df[state_df[subject_col].isin(t_subject_filter)] if t_subject_filter and subject_col in state_df.columns else state_df.copy()
+
+                    with fc3:
+                        grd_opts = sorted(subject_df[grade_col].dropna().unique()) if grade_col in subject_df.columns else []
+                        t_grade_filter = st.multiselect("Grade", grd_opts, key="tab5_grade")
+
+                    filtered_topic_df = subject_df[subject_df[grade_col].isin(t_grade_filter)] if t_grade_filter and grade_col in subject_df.columns else subject_df.copy()
+
+                # ── KPI METRICS ──────────────────────────────────────────────
+                total_sessions   = len(filtered_topic_df)
+                unique_topics    = filtered_topic_df["topic_name"].nunique() if "topic_name" in filtered_topic_df.columns else 0
+                unique_subtopics = filtered_topic_df["sub_topic_name"].nunique() if "sub_topic_name" in filtered_topic_df.columns else 0
+                unique_centers   = filtered_topic_df["center_id"].nunique() if "center_id" in filtered_topic_df.columns else (
+                    filtered_topic_df["center_name"].nunique() if "center_name" in filtered_topic_df.columns else 0
+                )
+
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Sessions", f"{total_sessions:,}")
+                with col2:
+                    st.metric("Unique Topics", f"{unique_topics:,}")
+                with col3:
+                    st.metric("Unique Subtopics", f"{unique_subtopics:,}")
+                with col4:
+                    st.metric("Active Centers", f"{unique_centers:,}")
+
+                st.markdown("---")
+
+                # ── DASHBOARD SUB-TABS ────────────────────────────────────────
+                top_tab1, top_tab2, top_tab3 = st.tabs([
+                    "📋 Topic Analysis",
+                    "❌ Cancelled Sessions",
+                    "⏸️ Offline Sessions"
+                ])
+
+                # 1. TOPIC ANALYSIS
+                with top_tab1:
+                    if "topic_name" in filtered_topic_df.columns:
+                        st.subheader("Top Topics")
+                        topic_summary = (
+                            filtered_topic_df
+                            .groupby("topic_name")
+                            .size()
+                            .reset_index(name="Sessions")
+                            .sort_values("Sessions", ascending=False)
+                            .head(20)
+                        )
+                        fig = px.bar(
+                            topic_summary, x="Sessions", y="topic_name",
+                            orientation="h", title="Top 20 Topics"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    if "sub_topic_name" in filtered_topic_df.columns:
+                        st.subheader("Top Sub Topics")
+                        subtopic_summary = (
+                            filtered_topic_df
+                            .groupby("sub_topic_name")
+                            .size()
+                            .reset_index(name="Sessions")
+                            .sort_values("Sessions", ascending=False)
+                            .head(20)
+                        )
+                        fig2 = px.bar(
+                            subtopic_summary, x="Sessions", y="sub_topic_name",
+                            orientation="h", title="Top 20 Sub Topics"
+                        )
+                        st.plotly_chart(fig2, use_container_width=True)
+
+                    if subject_col in filtered_topic_df.columns:
+                        st.subheader("Subject Distribution")
+                        subject_chart = (
+                            filtered_topic_df
+                            .groupby(subject_col)
+                            .size()
+                            .reset_index(name="Count")
+                        )
+                        fig3 = px.pie(
+                            subject_chart, names=subject_col, values="Count"
+                        )
+                        st.plotly_chart(fig3, use_container_width=True)
+
+                # 2. CANCELLED SESSIONS
+                with top_tab2:
+                    st.subheader("Cancelled Session Analysis")
+                    if not cancelled_df.empty:
+                        st.metric("Total Cancelled Sessions", f"{len(cancelled_df):,}")
+
+                        cancel_reason_col = (
+                            "cancel_reason" if "cancel_reason" in cancelled_df.columns else (
+                                "Cancel_reason" if "Cancel_reason" in cancelled_df.columns else None
+                            )
+                        )
+                        if cancel_reason_col:
+                            cancel_chart = (
+                                cancelled_df
+                                .groupby(cancel_reason_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                                .head(15)
+                            )
+                            fig4 = px.bar(
+                                cancel_chart, x="Count", y=cancel_reason_col,
+                                orientation="h", title="Cancellation Reasons"
+                            )
+                            st.plotly_chart(fig4, use_container_width=True)
+
+                        canc_state_col = "State" if "State" in cancelled_df.columns else (
+                            "state" if "state" in cancelled_df.columns else None
+                        )
+                        if canc_state_col:
+                            state_cancel = (
+                                cancelled_df
+                                .groupby(canc_state_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                            )
+                            fig5 = px.bar(
+                                state_cancel, x=canc_state_col, y="Count",
+                                title="Cancelled Sessions by State"
+                            )
+                            st.plotly_chart(fig5, use_container_width=True)
+                    else:
+                        st.info("No cancelled sessions data found in the uploaded file.")
+
+                # 3. OFFLINE SESSIONS
+                with top_tab3:
+                    st.subheader("Offline Session Analysis")
+                    if not offline_df.empty:
+                        st.metric("Total Offline Sessions", f"{len(offline_df):,}")
+
+                        offline_reason_col = (
+                            "Offline reason" if "Offline reason" in offline_df.columns else (
+                                "offline_reason" if "offline_reason" in offline_df.columns else None
+                            )
+                        )
+                        if offline_reason_col:
+                            offline_reason = (
+                                offline_df
+                                .groupby(offline_reason_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                            )
+                            fig6 = px.bar(
+                                offline_reason, x="Count", y=offline_reason_col,
+                                orientation="h", title="Offline Reasons"
+                            )
+                            st.plotly_chart(fig6, use_container_width=True)
+
+                        off_state_col = "State" if "State" in offline_df.columns else (
+                            "state" if "state" in offline_df.columns else None
+                        )
+                        if off_state_col:
+                            state_offline = (
+                                offline_df
+                                .groupby(off_state_col)
+                                .size()
+                                .reset_index(name="Count")
+                                .sort_values("Count", ascending=False)
+                            )
+                            fig7 = px.bar(
+                                state_offline, x=off_state_col, y="Count",
+                                title="Offline Sessions by State"
+                            )
+                            st.plotly_chart(fig7, use_container_width=True)
+                    else:
+                        st.info("No offline sessions data found in the uploaded file.")
+
+                # ── EXPORT DATA ──────────────────────────────────────────────
+                st.markdown("---")
+                st.download_button(
+                    "📥 Download Filtered Topic Data",
+                    filtered_topic_df.to_csv(index=False),
+                    file_name=f"filtered_{uploaded_topic_file.name.replace('.xlsx', '.csv')}",
+                    mime="text/csv",
+                    key="download_topic_csv"
+                )
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # TAB 6 — BASELINE ONLY METRICS
+    # ═════════════════════════════════════════════════════════════════════════
+    with tab_bl:
+        st.markdown("### 🎯 Baseline Assessment Diagnostics (BL Only)")
+        st.caption(
+            "Upload a standalone Baseline assessment Excel file to inspect student readiness, "
+            "proficiency tiers, and subject/grade gaps without requiring Endline data."
+        )
+
+        bl_file = st.file_uploader(
+            "📁 Upload Baseline Assessment File (.xlsx)",
+            type=["xlsx", "xls"],
+            key="bl_only_uploader",
+        )
+
+        if bl_file is None:
+            st.info("👆 Upload your Baseline Excel file above to view Baseline-only metrics and visuals.")
+        else:
+            @st.cache_data(show_spinner=False)
+            def _load_bl_only(file):
+                xl = pd.ExcelFile(file)
+                target_sheet = xl.sheet_names[0]
+                for s in xl.sheet_names:
+                    if any(k in s.lower() for k in ("baseline", "bl", "score", "data")):
+                        target_sheet = s
+                        break
+                df_b = pd.read_excel(xl, sheet_name=target_sheet)
+                df_b.columns = df_b.columns.str.strip()
+                return df_b
+
+            bl_raw = _load_bl_only(bl_file)
+
+            if bl_raw.empty:
+                st.error("⚠️ The uploaded Baseline sheet is empty.")
+            else:
+                def _pick_col(df_check, candidates):
+                    lower_map = {c.lower().strip(): c for c in df_check.columns}
+                    for cand in candidates:
+                        if cand.lower() in lower_map:
+                            return lower_map[cand.lower()]
+                    return None
+
+                col_score   = _pick_col(bl_raw, [
+                    "Baseline%", "Baseline %", "BL%", "BL %",
+                    "Baseline Score", "Score%", "Score %", "Percentage", "Marks %"
+                ])
+                col_student = _pick_col(bl_raw, ["Student ID", "Student_ID", "Student Name", "Child ID", "Enrollment ID"])
+                col_center  = _pick_col(bl_raw, ["Center Name", "Center", "Centre Name", "Centre"])
+                col_state   = _pick_col(bl_raw, ["State", "Center State"])
+                col_subject = _pick_col(bl_raw, ["Subject", "Subject Name"])
+                col_grade   = _pick_col(bl_raw, ["Grade", "Class"])
+                col_gender  = _pick_col(bl_raw, ["Gender", "Sex"])
+
+                if col_score is None:
+                    st.error(
+                        f"⚠️ Could not detect a percentage score column. Found columns: `{list(bl_raw.columns)}`. "
+                        "Ensure a column like `Baseline%`, `BL %`, or `Percentage` exists."
+                    )
+                else:
+                    bl_df = bl_raw.copy()
+                    bl_df["_score"] = pd.to_numeric(bl_df[col_score], errors="coerce")
+                    bl_df = bl_df.dropna(subset=["_score"])
+
+                    # ── In-Tab Filters ───────────────────────────────────────
+                    with st.expander("🔍 Baseline Filters", expanded=True):
+                        f1, f2, f3 = st.columns(3)
+                        with f1:
+                            if col_state:
+                                st_opts = sorted(bl_df[col_state].dropna().astype(str).unique())
+                                sel_bl_state = st.multiselect("State", st_opts, default=st_opts, key="bl_only_state")
+                                if sel_bl_state:
+                                    bl_df = bl_df[bl_df[col_state].astype(str).isin(sel_bl_state)]
+                        with f2:
+                            if col_subject:
+                                sub_opts = sorted(bl_df[col_subject].dropna().astype(str).unique())
+                                sel_bl_sub = st.multiselect("Subject", sub_opts, default=sub_opts, key="bl_only_sub")
+                                if sel_bl_sub:
+                                    bl_df = bl_df[bl_df[col_subject].astype(str).isin(sel_bl_sub)]
+                        with f3:
+                            if col_grade:
+                                grd_opts = sorted(bl_df[col_grade].dropna().astype(str).unique())
+                                sel_bl_grd = st.multiselect("Grade", grd_opts, default=grd_opts, key="bl_only_grd")
+                                if sel_bl_grd:
+                                    bl_df = bl_df[bl_df[col_grade].astype(str).isin(sel_bl_grd)]
+
+                    if bl_df.empty:
+                        st.info("No records match the selected Baseline filters.")
+                    else:
+                        def _tier(v):
+                            if v < 40:
+                                return "Needs Support (<40%)"
+                            elif v < 70:
+                                return "Developing (40–69%)"
+                            return "Proficient (≥70%)"
+
+                        bl_df["Proficiency Tier"] = bl_df["_score"].apply(_tier)
+
+                        # ── KPI Strip ────────────────────────────────────────
+                        n_assessed  = bl_df[col_student].nunique() if col_student else len(bl_df)
+                        avg_bl      = bl_df["_score"].mean()
+                        med_bl      = bl_df["_score"].median()
+                        prof_pct    = (bl_df["_score"] >= 70).mean() * 100
+                        support_pct = (bl_df["_score"] < 40).mean() * 100
+                        n_centres   = bl_df[col_center].nunique() if col_center else 0
+
+                        k1, k2, k3, k4, k5 = st.columns(5)
+                        k1.markdown(_kpi("Students Assessed", f"{n_assessed:,}",   P["teal"],   f"{n_centres} centres" if col_center else "total rows"), unsafe_allow_html=True)
+                        k2.markdown(_kpi("Avg BL Score",      f"{avg_bl:.1f}%",     P["violet"], f"median {med_bl:.1f}%"), unsafe_allow_html=True)
+                        k3.markdown(_kpi("Proficient (≥70%)", f"{prof_pct:.1f}%",   P["green"],  "ready / strong"), unsafe_allow_html=True)
+                        k4.markdown(_kpi("Needs Support",     f"{support_pct:.1f}%",P["red"],    "below 40%"), unsafe_allow_html=True)
+                        k5.markdown(_kpi("Total Assessments", f"{len(bl_df):,}",    P["amber"],  "subject-student tests"), unsafe_allow_html=True)
+
+                        st.markdown("---")
+
+                        # ── Row 1: Proficiency Donut + Score Distribution ────
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown("##### Proficiency Tier Breakdown")
+                            tier_df = bl_df["Proficiency Tier"].value_counts().reset_index()
+                            tier_df.columns = ["Tier", "Count"]
+                            fig_tier = px.pie(
+                                tier_df, names="Tier", values="Count", hole=0.48,
+                                color="Tier",
+                                color_discrete_map={
+                                    "Needs Support (<40%)": P["red"],
+                                    "Developing (40–69%)":  P["amber"],
+                                    "Proficient (≥70%)":    P["green"],
+                                },
+                            )
+                            fig_tier.update_traces(
+                                textposition="outside",
+                                texttemplate="<b>%{label}</b><br>%{percent:.1%}",
+                            )
+                            fig_tier.update_layout(
+                                height=320, showlegend=False,
+                                plot_bgcolor=BG, paper_bgcolor=BG,
+                                margin=dict(l=10, r=10, t=30, b=10),
+                            )
+                            st.plotly_chart(fig_tier, use_container_width=True)
+
+                        with c2:
+                            st.markdown("##### Baseline Score Distribution")
+                            fig_bl_hist = px.histogram(
+                                bl_df, x="_score", nbins=20,
+                                color_discrete_sequence=[P["teal"]], opacity=0.85,
+                            )
+                            fig_bl_hist.add_vline(
+                                x=avg_bl, line_dash="dash", line_color=P["red"],
+                                annotation_text=f"Mean {avg_bl:.1f}%"
+                            )
+                            _layout(fig_bl_hist, height=320)
+                            fig_bl_hist.update_layout(
+                                xaxis_title="Baseline Score %",
+                                yaxis_title="Assessments",
+                                bargap=0.05,
+                            )
+                            st.plotly_chart(fig_bl_hist, use_container_width=True)
+
+                        st.markdown("---")
+
+                        # ── Row 2: Subject & Grade Performance ───────────────
+                        c3, c4 = st.columns(2)
+                        with c3:
+                            if col_subject:
+                                st.markdown("##### Avg Baseline % by Subject")
+                                sub_bl = (
+                                    bl_df.groupby(col_subject)["_score"].mean()
+                                    .reset_index().rename(columns={"_score": "Avg BL%"})
+                                    .sort_values("Avg BL%", ascending=True)
+                                )
+                                fig_sub_bl = px.bar(
+                                    sub_bl, x="Avg BL%", y=col_subject, orientation="h",
+                                    text=sub_bl["Avg BL%"].round(1).astype(str) + "%",
+                                    color="Avg BL%",
+                                    color_continuous_scale=[P["coral"], P["amber"], P["
