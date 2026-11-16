@@ -89,12 +89,6 @@ def discover_monthly_files(data_dir: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_quarter_label(month_num: int, year: int) -> str:
-    """Financial year quarters:
-       Q1 = Apr-Jun
-       Q2 = Jul-Sep
-       Q3 = Oct-Dec
-       Q4 = Jan-Mar
-    """
     if month_num in (4, 5, 6):
         return f"Q1 {year} (Apr–Jun)"
     elif month_num in (7, 8, 9):
@@ -106,7 +100,6 @@ def get_quarter_label(month_num: int, year: int) -> str:
 
 
 def discover_quarterly_files(data_dir: str) -> dict:
-    """Group available monthly VRM/DRM files into financial quarters."""
     monthly = discover_monthly_files(data_dir)
     quarters = {}
 
@@ -140,10 +133,6 @@ def discover_quarterly_files(data_dir: str) -> dict:
 
 
 def get_half_yearly_label(month_num: int, year: int) -> str:
-    """Financial year half-years:
-       H1 = Apr-Sep
-       H2 = Oct-Mar
-    """
     if month_num in (4, 5, 6, 7, 8, 9):
         return f"H1 {year} (Apr–Sep)"
     else:
@@ -152,7 +141,6 @@ def get_half_yearly_label(month_num: int, year: int) -> str:
 
 
 def discover_half_yearly_files(data_dir: str) -> dict:
-    """Group available monthly VRM/DRM files into financial half-years."""
     monthly = discover_monthly_files(data_dir)
     half_years = {}
 
@@ -190,10 +178,6 @@ def discover_half_yearly_files(data_dir: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_selected_vrm_data(selected_entries: list) -> dict:
-    """
-    Loads VRM data for multiple selected month entries and concatenates 
-    them together across 'active', 'dropped', and 'new_reg' sheets.
-    """
     active_dfs, dropped_dfs, new_reg_dfs = [], [], []
 
     for entry in selected_entries:
@@ -224,10 +208,6 @@ def load_selected_vrm_data(selected_entries: list) -> dict:
 
 
 def load_selected_drm_data(selected_entries: list) -> dict:
-    """
-    Loads DRM data for multiple selected month entries and concatenates 
-    them across all individual DRM sheets.
-    """
     sess_dfs, drm_dfs, ac_dfs, od_dfs, ne_dfs = [], [], [], [], []
 
     for entry in selected_entries:
@@ -402,7 +382,7 @@ def _group_ref(ref: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VRM DATA LOADING
+# VRM DATA LOADING (SAFE PARSING)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_data(path: str) -> dict:
@@ -410,74 +390,89 @@ def load_data(path: str) -> dict:
         return {}
 
     xl = pd.ExcelFile(path)
+    sheets = xl.sheet_names
 
-    active = pd.read_excel(xl, sheet_name=_find_sheet(xl, SHEET_ACTIVE))
-    active.columns = active.columns.str.strip()
+    active_name = _find_sheet(xl, SHEET_ACTIVE)
+    if active_name in sheets:
+        active = pd.read_excel(xl, sheet_name=active_name)
+        active.columns = active.columns.str.strip()
 
-    active.rename(columns={
-        "Volunteer ID":               "Volunteer id",
-        "Volunteer Name":             "Volunteer name",
-        "EV Joined Date":             "Joined(ev)",
-        "Volunteer State":            "Residence state",
-        "Volunteer City":             "Residence city",
-        "Center Name":                "Center name",
-        "Center State":               "State",
-        "Offering Status":            "Offering status",
-        "Total Hours (Comp + Offline)":"Total hours(Comp+Offline)",
-        "Attendance %":               "Attendance%",
-    }, inplace=True)
+        active.rename(columns={
+            "Volunteer ID":               "Volunteer id",
+            "Volunteer Name":             "Volunteer name",
+            "EV Joined Date":             "Joined(ev)",
+            "Volunteer State":            "Residence state",
+            "Volunteer City":             "Residence city",
+            "Center Name":                "Center name",
+            "Center State":               "State",
+            "Offering Status":            "Offering status",
+            "Total Hours (Comp + Offline)":"Total hours(Comp+Offline)",
+            "Attendance %":               "Attendance%",
+        }, inplace=True)
 
-    for col in ["State", "Residence state"]:
-        if col in active.columns:
-            active[col] = (
-                active[col].astype(str)
+        for col in ["State", "Residence state"]:
+            if col in active.columns:
+                active[col] = (
+                    active[col].astype(str)
+                    .str.replace("\u00ac\u00a0", " ", regex=False)
+                    .str.replace("\u00a0", " ", regex=False)
+                    .str.replace(r"\s+", " ", regex=True)
+                    .str.strip()
+                )
+
+        active["Attendance%"] = pd.to_numeric(active["Attendance%"], errors="coerce")
+        active["Joined(ev)"]  = pd.to_datetime(active["Joined(ev)"], errors="coerce")
+
+        active["Subject_clean"]    = active["Subject"].map(SUBJECT_MAP).fillna(active["Subject"])
+        active["Profession_clean"] = active["Profession"].map(PROFESSION_MAP).fillna("Others")
+        active["Ref_group"]        = active["Reference"].apply(_group_ref)
+
+        for col in ["Donor", "State", "Subject_clean", "Center name",
+                    "Residence state", "Residence city", "Ref_group"]:
+            if col in active.columns:
+                active[col] = active[col].fillna("Unknown")
+
+        for col in ["Registered", "Reg Boys", "Reg Girls",
+                    "Enrolled",   "En Boys",  "En Girls",
+                    "Planned",    "Scheduled", "Completed",
+                    "Offline",    "Cancelled",
+                    "Total hours(Comp+Offline)", "CLH"]:
+            if col in active.columns:
+                active[col] = pd.to_numeric(active[col], errors="coerce").fillna(0).astype(int)
+    else:
+        active = pd.DataFrame()
+
+    dropped_name = _find_sheet(xl, SHEET_DROPPED)
+    if dropped_name in sheets:
+        dropped = pd.read_excel(xl, sheet_name=dropped_name)
+        dropped.columns = dropped.columns.str.strip()
+        if "State" in dropped.columns:
+            dropped["State"] = (
+                dropped["State"].astype(str)
                 .str.replace("\u00ac\u00a0", " ", regex=False)
                 .str.replace("\u00a0", " ", regex=False)
-                .str.replace(r"\s+", " ", regex=True)
                 .str.strip()
             )
+    else:
+        dropped = pd.DataFrame()
 
-    active["Attendance%"] = pd.to_numeric(active["Attendance%"], errors="coerce")
-    active["Joined(ev)"]  = pd.to_datetime(active["Joined(ev)"], errors="coerce")
-
-    active["Subject_clean"]    = active["Subject"].map(SUBJECT_MAP).fillna(active["Subject"])
-    active["Profession_clean"] = active["Profession"].map(PROFESSION_MAP).fillna("Others")
-    active["Ref_group"]        = active["Reference"].apply(_group_ref)
-
-    for col in ["Donor", "State", "Subject_clean", "Center name",
-                "Residence state", "Residence city", "Ref_group"]:
-        if col in active.columns:
-            active[col] = active[col].fillna("Unknown")
-
-    for col in ["Registered", "Reg Boys", "Reg Girls",
-                "Enrolled",   "En Boys",  "En Girls",
-                "Planned",    "Scheduled", "Completed",
-                "Offline",    "Cancelled",
-                "Total hours(Comp+Offline)", "CLH"]:
-        if col in active.columns:
-            active[col] = pd.to_numeric(active[col], errors="coerce").fillna(0).astype(int)
-
-    dropped = pd.read_excel(xl, sheet_name=_find_sheet(xl, SHEET_DROPPED))
-    dropped.columns = dropped.columns.str.strip()
-    if "State" in dropped.columns:
-        dropped["State"] = (
-            dropped["State"].astype(str)
-            .str.replace("\u00ac\u00a0", " ", regex=False)
-            .str.replace("\u00a0", " ", regex=False)
-            .str.strip()
-        )
-
-    new_reg = pd.read_excel(xl, sheet_name=_find_sheet(xl, SHEET_NEW_REG))
-    new_reg.columns = new_reg.columns.str.strip()
-    new_reg["Date Joined"] = pd.to_datetime(new_reg["Date Joined"], errors="coerce")
-    new_reg["Ref_group"]   = new_reg["Reference"].apply(_group_ref)
-    if "Gender" in new_reg.columns:
-        new_reg["Gender"] = new_reg["Gender"].astype(str).str.strip().str.title()
+    new_reg_name = _find_sheet(xl, SHEET_NEW_REG)
+    if new_reg_name in sheets:
+        new_reg = pd.read_excel(xl, sheet_name=new_reg_name)
+        new_reg.columns = new_reg.columns.str.strip()
+        if "Date Joined" in new_reg.columns:
+            new_reg["Date Joined"] = pd.to_datetime(new_reg["Date Joined"], errors="coerce")
+        if "Reference" in new_reg.columns:
+            new_reg["Ref_group"]   = new_reg["Reference"].apply(_group_ref)
+        if "Gender" in new_reg.columns:
+            new_reg["Gender"] = new_reg["Gender"].astype(str).str.strip().str.title()
+    else:
+        new_reg = pd.DataFrame()
 
     return {"active": active, "dropped": dropped, "new_reg": new_reg}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DRM DATA LOADING
+# DRM DATA LOADING (SAFE PARSING)
 # ─────────────────────────────────────────────────────────────────────────────
 SUBJECT_NORM_DRM = {
     "Conceptual Learning - Math":     "Math",
@@ -504,6 +499,7 @@ def load_drm_data(path: str) -> dict:
         return {}
 
     xl = pd.ExcelFile(path)
+    sheets = xl.sheet_names
 
     def _fix_state(s):
         return (str(s)
@@ -511,49 +507,61 @@ def load_drm_data(path: str) -> dict:
                 .replace("\u00a0", " ")
                 .strip())
 
-    sess = pd.read_excel(xl, sheet_name=_find_sheet(xl, "SESSION DUMP"))
-    sess.columns = sess.columns.str.strip()
-    sess["Session_start"] = pd.to_datetime(sess["Session_start"], errors="coerce")
-    sess["Attendance%"]   = pd.to_numeric(sess["Attendance%"], errors="coerce")
-    sess["State"]         = sess["State"].apply(_fix_state)
-    sess["Donor"]         = sess["Donor"].fillna("Unknown")
-    sess["Subject_clean"] = sess["Subject"].str.strip().map(SUBJECT_NORM_DRM).fillna(sess["Subject"])
-    for col in ["Present/CLH", "Total students", "Boys", "Girls"]:
-        if col in sess.columns:
-            sess[col] = pd.to_numeric(sess[col], errors="coerce").fillna(0).astype(int)
-    sess["week"] = sess["Session_start"].dt.to_period("W").astype(str)
-    sess["dow"]  = sess["Session_start"].dt.day_name()
-    sess["hour"] = sess["Session_start"].dt.hour
+    sess_name = _find_sheet(xl, "SESSION DUMP")
+    if sess_name in sheets:
+        sess = pd.read_excel(xl, sheet_name=sess_name)
+        sess.columns = sess.columns.str.strip()
+        sess["Session_start"] = pd.to_datetime(sess["Session_start"], errors="coerce")
+        sess["Attendance%"]   = pd.to_numeric(sess["Attendance%"], errors="coerce")
+        sess["State"]         = sess["State"].apply(_fix_state)
+        sess["Donor"]         = sess["Donor"].fillna("Unknown")
+        sess["Subject_clean"] = sess["Subject"].str.strip().map(SUBJECT_NORM_DRM).fillna(sess["Subject"])
+        for col in ["Present/CLH", "Total students", "Boys", "Girls"]:
+            if col in sess.columns:
+                sess[col] = pd.to_numeric(sess[col], errors="coerce").fillna(0).astype(int)
+        sess["week"] = sess["Session_start"].dt.to_period("W").astype(str)
+        sess["dow"]  = sess["Session_start"].dt.day_name()
+        sess["hour"] = sess["Session_start"].dt.hour
+    else:
+        sess = pd.DataFrame()
 
-    drm = pd.read_excel(xl, sheet_name=_find_sheet(xl, "DRM"))
-    drm.columns = drm.columns.str.strip()
-    drm = _apply_aliases(drm, DRM_SHEET_ALIASES)
-    drm["State"]      = drm["State"].apply(_fix_state)
-    drm["Donor Name"] = drm["Donor Name"].fillna("Unknown")
-    for col in ["Planned","Scheduled","Completed","Offline","Cancelled",
-                "Live Volunteers","Live_CLH","Registered","Reg Boys","Reg Girls",
-                "Enrolled","En Boys","En Girls"]:
-        if col in drm.columns:
-            drm[col] = pd.to_numeric(drm[col], errors="coerce").fillna(0)
-    drm["Attendance %"]  = pd.to_numeric(drm["Attendance %"], errors="coerce")
-    drm["Completion%"]   = ((drm["Completed"] + drm["Offline"])
-                            / drm["Planned"].replace(0, float("nan")) * 100).round(1)
-    drm["Cancellation%"] = (drm["Cancelled"]
-                            / drm["Planned"].replace(0, float("nan")) * 100).round(1)
-    drm["Dropout%"]      = ((drm["Registered"] - drm["Enrolled"])
-                            / drm["Registered"].replace(0, float("nan")) * 100).round(1)
-    drm["Girl%"]         = (drm["En Girls"]
-                            / (drm["En Boys"] + drm["En Girls"]).replace(0, float("nan")) * 100).round(1)
+    drm_name = _find_sheet(xl, "DRM")
+    if drm_name in sheets:
+        drm = pd.read_excel(xl, sheet_name=drm_name)
+        drm.columns = drm.columns.str.strip()
+        drm = _apply_aliases(drm, DRM_SHEET_ALIASES)
+        drm["State"]      = drm["State"].apply(_fix_state)
+        drm["Donor Name"] = drm["Donor Name"].fillna("Unknown")
+        for col in ["Planned","Scheduled","Completed","Offline","Cancelled",
+                    "Live Volunteers","Live_CLH","Registered","Reg Boys","Reg Girls",
+                    "Enrolled","En Boys","En Girls"]:
+            if col in drm.columns:
+                drm[col] = pd.to_numeric(drm[col], errors="coerce").fillna(0)
+        drm["Attendance %"]  = pd.to_numeric(drm["Attendance %"], errors="coerce")
+        drm["Completion%"]   = ((drm["Completed"] + drm["Offline"])
+                                / drm["Planned"].replace(0, float("nan")) * 100).round(1)
+        drm["Cancellation%"] = (drm["Cancelled"]
+                                / drm["Planned"].replace(0, float("nan")) * 100).round(1)
+        drm["Dropout%"]      = ((drm["Registered"] - drm["Enrolled"])
+                                / drm["Registered"].replace(0, float("nan")) * 100).round(1)
+        drm["Girl%"]         = (drm["En Girls"]
+                                / (drm["En Boys"] + drm["En Girls"]).replace(0, float("nan")) * 100).round(1)
+    else:
+        drm = pd.DataFrame()
 
-    ac = pd.read_excel(xl, sheet_name=_find_sheet(xl, "Active centers"))
-    ac.columns = ac.columns.str.strip()
+    ac_name = _find_sheet(xl, "Active centers")
+    ac = pd.read_excel(xl, sheet_name=ac_name) if ac_name in sheets else pd.DataFrame()
+    if not ac.empty: ac.columns = ac.columns.str.strip()
 
-    od = pd.read_excel(xl, sheet_name=_find_sheet(xl, "Offering Details"))
-    od.columns = od.columns.str.strip()
-    od["Subject_clean"] = od["Subject"].str.strip().map(SUBJECT_NORM_DRM).fillna(od["Subject"])
+    od_name = _find_sheet(xl, "Offering Details")
+    od = pd.read_excel(xl, sheet_name=od_name) if od_name in sheets else pd.DataFrame()
+    if not od.empty:
+        od.columns = od.columns.str.strip()
+        od["Subject_clean"] = od["Subject"].str.strip().map(SUBJECT_NORM_DRM).fillna(od["Subject"])
 
-    ne = pd.read_excel(xl, sheet_name=_find_sheet(xl, "New Enrolled student"))
-    ne.columns = ne.columns.str.strip()
+    ne_name = _find_sheet(xl, "New Enrolled student")
+    ne = pd.read_excel(xl, sheet_name=ne_name) if ne_name in sheets else pd.DataFrame()
+    if not ne.empty: ne.columns = ne.columns.str.strip()
 
     return {"sess": sess, "drm": drm, "ac": ac, "od": od, "ne": ne}
 
@@ -779,31 +787,21 @@ def render_ops_dashboard():
     st.markdown("---")
 
     # ═════════════════════════════════════════════════════════════════════════
-    # LOAD VRM DATA
+    # LOAD VRM & DRM DATA
     # ═════════════════════════════════════════════════════════════════════════
 
-    with st.spinner(f"Loading VRM data for {period_label}…"):
+    with st.spinner(f"Loading VRM & DRM data for {period_label}…"):
         data = load_selected_vrm_data(selected_entries)
+        drm_data_raw = load_selected_drm_data(selected_entries)
 
-    if not data or data["active"].empty:
-        st.error(f"⚠️ Could not load VRM data for {period_label}.")
-        return
-
-    df_raw  = data["active"]
-    dropped = data["dropped"]
-    new_reg = data["new_reg"]
+    df_raw  = data.get("active", pd.DataFrame())
+    dropped = data.get("dropped", pd.DataFrame())
+    new_reg = data.get("new_reg", pd.DataFrame())
 
     if "active_tab" not in st.session_state:
         st.session_state.active_tab = "vrm"
 
-    # ═════════════════════════════════════════════════════════════════════════
-    # LOAD DRM DATA
-    # ═════════════════════════════════════════════════════════════════════════
-
-    with st.spinner(f"Loading DRM data for {period_label}…"):
-        drm_data_raw = load_selected_drm_data(selected_entries)
-
-    # ── Build sidebar — content switches based on active_tab flag ─────────────
+    # ── Build sidebar ─────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown("---")
 
@@ -826,9 +824,8 @@ def render_ops_dashboard():
                 unsafe_allow_html=True,
             )
 
-            _vrm_all_donors   = sorted(df_raw["Donor"].dropna().unique())
-            _vrm_all_states   = sorted(df_raw["State"].dropna().unique())
-            _vrm_all_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
+            _vrm_all_donors   = sorted(df_raw["Donor"].dropna().unique()) if not df_raw.empty else []
+            _vrm_all_states   = sorted(df_raw["State"].dropna().unique()) if not df_raw.empty else []
 
             sel_donors = st.multiselect(
                 "Donor",
@@ -838,7 +835,7 @@ def render_ops_dashboard():
                 key="ops_donor",
             )
 
-            if sel_donors:
+            if sel_donors and not df_raw.empty:
                 _linked_states = sorted(
                     df_raw[df_raw["Donor"].isin(sel_donors)]["State"].dropna().unique()
                 )
@@ -853,12 +850,12 @@ def render_ops_dashboard():
                 key="ops_state",
             )
 
-            _vmask = pd.Series([True] * len(df_raw), index=df_raw.index)
-            if sel_donors:
+            _vmask = pd.Series([True] * len(df_raw), index=df_raw.index) if not df_raw.empty else []
+            if sel_donors and not df_raw.empty:
                 _vmask &= df_raw["Donor"].isin(sel_donors)
-            if sel_states:
+            if sel_states and not df_raw.empty:
                 _vmask &= df_raw["State"].isin(sel_states)
-            _linked_subjects = sorted(df_raw[_vmask]["Subject_clean"].dropna().unique())
+            _linked_subjects = sorted(df_raw[_vmask]["Subject_clean"].dropna().unique()) if not df_raw.empty else []
 
             sel_subjects = st.multiselect(
                 "Subject",
@@ -939,28 +936,30 @@ def render_ops_dashboard():
                 st.warning("DRM file not found — filters unavailable.")
                 sel_drm_donors = sel_drm_states = sel_drm_subjects = []
 
-            sel_donors   = sorted(df_raw["Donor"].dropna().unique())
-            sel_states   = sorted(df_raw["State"].dropna().unique())
-            sel_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
+            sel_donors   = sorted(df_raw["Donor"].dropna().unique()) if not df_raw.empty else []
+            sel_states   = sorted(df_raw["State"].dropna().unique()) if not df_raw.empty else []
+            sel_subjects = sorted(df_raw["Subject_clean"].dropna().unique()) if not df_raw.empty else []
 
-    df = df_raw[
-        df_raw["Donor"].isin(sel_donors) &
-        df_raw["State"].isin(sel_states) &
-        df_raw["Subject_clean"].isin(sel_subjects)
-    ].copy()
+    if not df_raw.empty:
+        df = df_raw[
+            df_raw["Donor"].isin(sel_donors) &
+            df_raw["State"].isin(sel_states) &
+            df_raw["Subject_clean"].isin(sel_subjects)
+        ].copy()
+    else:
+        df = pd.DataFrame()
 
     vol_df = df.drop_duplicates(subset="Volunteer id").copy() if not df.empty else df.copy()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # TABS
+    # DECLARE TABS AT TOP-LEVEL FOR GUARANTEED RENDERING
     # ─────────────────────────────────────────────────────────────────────────
-    tab_vol, tab_ctr, tab_aca, tab_drm, tab_top, tab_bl = st.tabs([
+    tab_vol, tab_ctr, tab_aca, tab_drm, tab_top = st.tabs([
         "🙋 Volunteers",
         "🏫 Centres",
         "📚 Academic Health",
         "📊 DRM Client Report",
         "📚 Topic & SubTopic Analytics",
-        "🎯 Baseline Only",
     ])
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -968,10 +967,7 @@ def render_ops_dashboard():
     # ═════════════════════════════════════════════════════════════════════════
     with tab_vol:
         if df.empty:
-            st.info(
-                "🔍 No data available for the selected filters.\n\n"
-                "Try broadening your Donor, State, or Subject selection in the sidebar."
-            )
+            st.info("🔍 No VRM data available for the selected filters or month files.")
         else:
             total_vols_offering = len(df)
             unique_vols         = vol_df["Volunteer id"].nunique()
@@ -1212,10 +1208,7 @@ def render_ops_dashboard():
     # ═════════════════════════════════════════════════════════════════════════
     with tab_ctr:
         if df.empty:
-            st.info(
-                "🔍 No data available for the selected filters.\n\n"
-                "Try broadening your Donor, State, or Subject selection in the sidebar."
-            )
+            st.info("🔍 No VRM data available for the selected filters.")
         else:
             st.markdown("#### Centres & Volunteers by Donor")
             has_vrm_gender = {"En Boys", "En Girls"}.issubset(df.columns)
@@ -1395,10 +1388,7 @@ def render_ops_dashboard():
     # ═════════════════════════════════════════════════════════════════════════
     with tab_aca:
         if df.empty:
-            st.info(
-                "🔍 No data available for the selected filters.\n\n"
-                "Try broadening your Donor, State, or Subject selection in the sidebar."
-            )
+            st.info("🔍 No VRM data available for the selected filters.")
         else:
             st.markdown("#### CLH by Subject")
             clh_subj = (
@@ -1530,26 +1520,15 @@ def render_ops_dashboard():
                 sess_raw["Donor"].isin(sel_drm_donors) &
                 sess_raw["State"].isin(sel_drm_states) &
                 sess_raw["Subject_clean"].isin(sel_drm_subjects)
-            ].copy()
+            ].copy() if not sess_raw.empty else pd.DataFrame()
 
             drm = drm_raw[
                 drm_raw["Donor Name"].isin(sel_drm_donors) &
                 drm_raw["State"].isin(sel_drm_states)
-            ].copy()
-
-            od = od_raw[
-                od_raw["Donor"].isin(sel_drm_donors) &
-                od_raw["State"].isin(sel_drm_states) &
-                od_raw["Subject_clean"].isin(sel_drm_subjects)
-            ].copy()
+            ].copy() if not drm_raw.empty else pd.DataFrame()
 
             if sess.empty or drm.empty:
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.info(
-                    "🔍 **No data available for the selected filters.**\n\n"
-                    "The combination of Donor, State, and Subject you selected returned no sessions "
-                    "or no active centres. Try broadening your selection in the sidebar."
-                )
+                st.info("🔍 No DRM sessions available for the selected filters.")
             else:
                 num_states_live   = drm["State"].nunique()
                 num_centres_live  = drm["Center Name"].nunique()
@@ -2348,180 +2327,3 @@ def render_ops_dashboard():
                     mime="text/csv",
                     key="download_topic_csv"
                 )
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 6 — BASELINE ONLY METRICS
-    # ═════════════════════════════════════════════════════════════════════════
-    with tab_bl:
-        st.markdown("### 🎯 Baseline Assessment Diagnostics (BL Only)")
-        st.caption(
-            "Upload a standalone Baseline assessment Excel file to inspect student readiness, "
-            "proficiency tiers, and subject/grade gaps without requiring Endline data."
-        )
-
-        bl_file = st.file_uploader(
-            "📁 Upload Baseline Assessment File (.xlsx)",
-            type=["xlsx", "xls"],
-            key="bl_only_uploader",
-        )
-
-        if bl_file is None:
-            st.info("👆 Upload your Baseline Excel file above to view Baseline-only metrics and visuals.")
-        else:
-            @st.cache_data(show_spinner=False)
-            def _load_bl_only(file):
-                xl = pd.ExcelFile(file)
-                target_sheet = xl.sheet_names[0]
-                for s in xl.sheet_names:
-                    if any(k in s.lower() for k in ("baseline", "bl", "score", "data")):
-                        target_sheet = s
-                        break
-                df_b = pd.read_excel(xl, sheet_name=target_sheet)
-                df_b.columns = df_b.columns.str.strip()
-                return df_b
-
-            bl_raw = _load_bl_only(bl_file)
-
-            if bl_raw.empty:
-                st.error("⚠️ The uploaded Baseline sheet is empty.")
-            else:
-                def _pick_col(df_check, candidates):
-                    lower_map = {c.lower().strip(): c for c in df_check.columns}
-                    for cand in candidates:
-                        if cand.lower() in lower_map:
-                            return lower_map[cand.lower()]
-                    return None
-
-                col_score   = _pick_col(bl_raw, [
-                    "Baseline%", "Baseline %", "BL%", "BL %",
-                    "Baseline Score", "Score%", "Score %", "Percentage", "Marks %"
-                ])
-                col_student = _pick_col(bl_raw, ["Student ID", "Student_ID", "Student Name", "Child ID", "Enrollment ID"])
-                col_center  = _pick_col(bl_raw, ["Center Name", "Center", "Centre Name", "Centre"])
-                col_state   = _pick_col(bl_raw, ["State", "Center State"])
-                col_subject = _pick_col(bl_raw, ["Subject", "Subject Name"])
-                col_grade   = _pick_col(bl_raw, ["Grade", "Class"])
-                col_gender  = _pick_col(bl_raw, ["Gender", "Sex"])
-
-                if col_score is None:
-                    st.error(
-                        f"⚠️ Could not detect a percentage score column. Found columns: `{list(bl_raw.columns)}`. "
-                        "Ensure a column like `Baseline%`, `BL %`, or `Percentage` exists."
-                    )
-                else:
-                    bl_df = bl_raw.copy()
-                    bl_df["_score"] = pd.to_numeric(bl_df[col_score], errors="coerce")
-                    bl_df = bl_df.dropna(subset=["_score"])
-
-                    # ── In-Tab Filters ───────────────────────────────────────
-                    with st.expander("🔍 Baseline Filters", expanded=True):
-                        f1, f2, f3 = st.columns(3)
-                        with f1:
-                            if col_state:
-                                st_opts = sorted(bl_df[col_state].dropna().astype(str).unique())
-                                sel_bl_state = st.multiselect("State", st_opts, default=st_opts, key="bl_only_state")
-                                if sel_bl_state:
-                                    bl_df = bl_df[bl_df[col_state].astype(str).isin(sel_bl_state)]
-                        with f2:
-                            if col_subject:
-                                sub_opts = sorted(bl_df[col_subject].dropna().astype(str).unique())
-                                sel_bl_sub = st.multiselect("Subject", sub_opts, default=sub_opts, key="bl_only_sub")
-                                if sel_bl_sub:
-                                    bl_df = bl_df[bl_df[col_subject].astype(str).isin(sel_bl_sub)]
-                        with f3:
-                            if col_grade:
-                                grd_opts = sorted(bl_df[col_grade].dropna().astype(str).unique())
-                                sel_bl_grd = st.multiselect("Grade", grd_opts, default=grd_opts, key="bl_only_grd")
-                                if sel_bl_grd:
-                                    bl_df = bl_df[bl_df[col_grade].astype(str).isin(sel_bl_grd)]
-
-                    if bl_df.empty:
-                        st.info("No records match the selected Baseline filters.")
-                    else:
-                        def _tier(v):
-                            if v < 40:
-                                return "Needs Support (<40%)"
-                            elif v < 70:
-                                return "Developing (40–69%)"
-                            return "Proficient (≥70%)"
-
-                        bl_df["Proficiency Tier"] = bl_df["_score"].apply(_tier)
-
-                        # ── KPI Strip ────────────────────────────────────────
-                        n_assessed  = bl_df[col_student].nunique() if col_student else len(bl_df)
-                        avg_bl      = bl_df["_score"].mean()
-                        med_bl      = bl_df["_score"].median()
-                        prof_pct    = (bl_df["_score"] >= 70).mean() * 100
-                        support_pct = (bl_df["_score"] < 40).mean() * 100
-                        n_centres   = bl_df[col_center].nunique() if col_center else 0
-
-                        k1, k2, k3, k4, k5 = st.columns(5)
-                        k1.markdown(_kpi("Students Assessed", f"{n_assessed:,}",   P["teal"],   f"{n_centres} centres" if col_center else "total rows"), unsafe_allow_html=True)
-                        k2.markdown(_kpi("Avg BL Score",      f"{avg_bl:.1f}%",     P["violet"], f"median {med_bl:.1f}%"), unsafe_allow_html=True)
-                        k3.markdown(_kpi("Proficient (≥70%)", f"{prof_pct:.1f}%",   P["green"],  "ready / strong"), unsafe_allow_html=True)
-                        k4.markdown(_kpi("Needs Support",     f"{support_pct:.1f}%",P["red"],    "below 40%"), unsafe_allow_html=True)
-                        k5.markdown(_kpi("Total Assessments", f"{len(bl_df):,}",    P["amber"],  "subject-student tests"), unsafe_allow_html=True)
-
-                        st.markdown("---")
-
-                        # ── Row 1: Proficiency Donut + Score Distribution ────
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.markdown("##### Proficiency Tier Breakdown")
-                            tier_df = bl_df["Proficiency Tier"].value_counts().reset_index()
-                            tier_df.columns = ["Tier", "Count"]
-                            fig_tier = px.pie(
-                                tier_df, names="Tier", values="Count", hole=0.48,
-                                color="Tier",
-                                color_discrete_map={
-                                    "Needs Support (<40%)": P["red"],
-                                    "Developing (40–69%)":  P["amber"],
-                                    "Proficient (≥70%)":    P["green"],
-                                },
-                            )
-                            fig_tier.update_traces(
-                                textposition="outside",
-                                texttemplate="<b>%{label}</b><br>%{percent:.1%}",
-                            )
-                            fig_tier.update_layout(
-                                height=320, showlegend=False,
-                                plot_bgcolor=BG, paper_bgcolor=BG,
-                                margin=dict(l=10, r=10, t=30, b=10),
-                            )
-                            st.plotly_chart(fig_tier, use_container_width=True)
-
-                        with c2:
-                            st.markdown("##### Baseline Score Distribution")
-                            fig_bl_hist = px.histogram(
-                                bl_df, x="_score", nbins=20,
-                                color_discrete_sequence=[P["teal"]], opacity=0.85,
-                            )
-                            fig_bl_hist.add_vline(
-                                x=avg_bl, line_dash="dash", line_color=P["red"],
-                                annotation_text=f"Mean {avg_bl:.1f}%"
-                            )
-                            _layout(fig_bl_hist, height=320)
-                            fig_bl_hist.update_layout(
-                                xaxis_title="Baseline Score %",
-                                yaxis_title="Assessments",
-                                bargap=0.05,
-                            )
-                            st.plotly_chart(fig_bl_hist, use_container_width=True)
-
-                        st.markdown("---")
-
-                        # ── Row 2: Subject & Grade Performance ───────────────
-                        c3, c4 = st.columns(2)
-                        with c3:
-                            if col_subject:
-                                st.markdown("##### Avg Baseline % by Subject")
-                                sub_bl = (
-                                    bl_df.groupby(col_subject)["_score"].mean()
-                                    .reset_index().rename(columns={"_score": "Avg BL%"})
-                                    .sort_values("Avg BL%", ascending=True)
-                                )
-                                fig_sub_bl = px.bar(
-                                    sub_bl, x="Avg BL%", y=col_subject, orientation="h",
-                                    text=sub_bl["Avg BL%"].round(1).astype(str) + "%",
-                                    color="Avg BL%",
-                                    color_continuous_scale=[P["coral"], P["amber"], P["
