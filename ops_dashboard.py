@@ -84,6 +84,25 @@ def discover_monthly_files(data_dir: str) -> dict:
     return dict(sorted(months.items(), key=lambda kv: _sort_key(kv[0])))
 
 
+def discover_excel_files(data_dir: str, exclude_vrm_drm: bool = True) -> list[str]:
+    """Return sorted list of .xlsx/.xls filenames in `data_dir` for manual selection."""
+    try:
+        filenames = os.listdir(data_dir)
+    except OSError:
+        return []
+
+    results = []
+    for fname in filenames:
+        if fname.startswith("~$"):
+            continue
+        if not fname.lower().endswith((".xlsx", ".xls")):
+            continue
+        if exclude_vrm_drm and MONTH_FILE_RE.match(fname):
+            continue
+        results.append(fname)
+    return sorted(results)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # QUARTERLY & HALF-YEARLY REPORTING HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -620,6 +639,23 @@ def _insight_box(text: str, color: str = "#ba7517", bg: str = "#faeeda") -> str:
 # MAIN RENDER
 # ─────────────────────────────────────────────────────────────────────────────
 def render_ops_dashboard():
+    # Ensure all 6 tabs fit cleanly on a single row without clipping off-screen
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stTabs"] [role="tablist"] {
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        div[data-testid="stTabs"] [role="tab"] {
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.title("🏢 Operations & Impact Command Center")
 
     available_months = discover_monthly_files(DATA_DIR)
@@ -958,9 +994,9 @@ def render_ops_dashboard():
         "🙋 Volunteers",
         "🏫 Centres",
         "📚 Academic Health",
-        "📊 DRM Client Report",
-        "📚 Topic & SubTopic Analytics",
-        "🎯 Baseline Only",
+        "📊 DRM Report",
+        "📑 Topic & SubTopic",
+        "🎯 Baseline",
     ])
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -2104,25 +2140,62 @@ def render_ops_dashboard():
                 )
 
     # ═════════════════════════════════════════════════════════════════════════
-    # TAB 5 — TOPIC & SUBTOPIC ANALYTICS (INTEGRATED TOPIC DASHBOARD)
+    # TAB 5 — TOPIC & SUBTOPIC ANALYTICS (MANUAL FILE SELECTION)
     # ═════════════════════════════════════════════════════════════════════════
     with tab_top:
-        st.markdown("### 📚 Topic & SubTopic Analytics Dashboard")
+        st.markdown("### 📑 Topic & SubTopic Analytics Dashboard")
 
-        uploaded_topic_file = st.file_uploader(
-            "📁 Upload Topic/SubTopic Excel File",
-            type=["xlsx", "xls"],
-            key="topic_file_uploader",
-            help="Upload the Excel file containing 'Topic-SubTopic', 'Cancelled Sessions', and 'Offline Sessions' sheets."
+        topic_source_mode = st.radio(
+            "📂 File Selection Mode",
+            ["Select from Folder", "Upload File"],
+            horizontal=True,
+            key="topic_file_source_mode",
         )
 
-        if uploaded_topic_file is None:
-            st.info("👆 Please upload a Topic/SubTopic Excel file above to activate this dashboard.")
+        selected_topic_source = None
+        selected_topic_label = ""
+
+        if topic_source_mode == "Select from Folder":
+            local_topic_files = discover_excel_files(DATA_DIR, exclude_vrm_drm=True)
+            if not local_topic_files:
+                st.warning(
+                    f"⚠️ No standalone Excel files found in `{DATA_DIR}`. "
+                    "Place your Topic/SubTopic `.xlsx` file in that folder or switch to **Upload File**."
+                )
+            else:
+                # Default to a file containing 'topic' if present, else the first file
+                default_idx = next(
+                    (i for i, f in enumerate(local_topic_files) if "topic" in f.lower()),
+                    0,
+                )
+                chosen_fname = st.selectbox(
+                    "📄 Select Topic/SubTopic Excel File",
+                    options=local_topic_files,
+                    index=default_idx,
+                    key="topic_manual_file_select",
+                    help="Manually choose the Excel workbook containing 'Topic-SubTopic', 'Cancelled Sessions', and 'Offline Sessions' sheets.",
+                )
+                if chosen_fname:
+                    selected_topic_source = os.path.join(DATA_DIR, chosen_fname)
+                    selected_topic_label = chosen_fname
         else:
-            @st.cache_data
-            def load_topic_uploaded_data(file):
+            uploaded_topic_file = st.file_uploader(
+                "📁 Upload Topic/SubTopic Excel File",
+                type=["xlsx", "xls"],
+                key="topic_file_uploader",
+                help="Upload the Excel file containing 'Topic-SubTopic', 'Cancelled Sessions', and 'Offline Sessions' sheets."
+            )
+            if uploaded_topic_file is not None:
+                selected_topic_source = uploaded_topic_file
+                selected_topic_label = uploaded_topic_file.name
+
+        if selected_topic_source is None:
+            st.info("👆 Please select or upload a Topic/SubTopic Excel file above to activate this dashboard.")
+        else:
+            @st.cache_data(show_spinner=False)
+            def load_topic_selected_data(file_source):
                 try:
-                    xl = pd.ExcelFile(file)
+                    xl = pd.ExcelFile(file_source)
                     sheets = xl.sheet_names
 
                     def _get_sheet_name(target):
@@ -2136,19 +2209,19 @@ def render_ops_dashboard():
                     c_sheet = _get_sheet_name("Cancelled Sessions")
                     o_sheet = _get_sheet_name("Offline Sessions")
 
-                    t_df = pd.read_excel(file, sheet_name=t_sheet) if t_sheet in sheets else pd.DataFrame()
-                    c_df = pd.read_excel(file, sheet_name=c_sheet) if c_sheet in sheets else pd.DataFrame()
-                    o_df = pd.read_excel(file, sheet_name=o_sheet) if o_sheet in sheets else pd.DataFrame()
+                    t_df = pd.read_excel(xl, sheet_name=t_sheet) if t_sheet in sheets else pd.DataFrame()
+                    c_df = pd.read_excel(xl, sheet_name=c_sheet) if c_sheet in sheets else pd.DataFrame()
+                    o_df = pd.read_excel(xl, sheet_name=o_sheet) if o_sheet in sheets else pd.DataFrame()
 
                     return t_df, c_df, o_df
                 except Exception as e:
-                    st.error(f"Error reading uploaded file: {e}")
+                    st.error(f"Error reading selected file: {e}")
                     return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-            topic_df, cancelled_df, offline_df = load_topic_uploaded_data(uploaded_topic_file)
+            topic_df, cancelled_df, offline_df = load_topic_selected_data(selected_topic_source)
 
             if topic_df.empty:
-                st.error("The uploaded file does not contain a valid 'Topic-SubTopic' sheet or has no data.")
+                st.error("The selected file does not contain a valid 'Topic-SubTopic' sheet or has no data.")
             else:
                 # ── IN-TAB FILTERS ──────────────────────────────────────────
                 with st.expander("📊 Topic Filters", expanded=True):
@@ -2293,7 +2366,7 @@ def render_ops_dashboard():
                             )
                             st.plotly_chart(fig5, use_container_width=True)
                     else:
-                        st.info("No cancelled sessions data found in the uploaded file.")
+                        st.info("No cancelled sessions data found in the selected file.")
 
                 # 3. OFFLINE SESSIONS
                 with top_tab3:
@@ -2337,14 +2410,15 @@ def render_ops_dashboard():
                             )
                             st.plotly_chart(fig7, use_container_width=True)
                     else:
-                        st.info("No offline sessions data found in the uploaded file.")
+                        st.info("No offline sessions data found in the selected file.")
 
                 # ── EXPORT DATA ──────────────────────────────────────────────
                 st.markdown("---")
+                clean_csv_name = re.sub(r"\.xlsx?$", ".csv", selected_topic_label, flags=re.IGNORECASE)
                 st.download_button(
                     "📥 Download Filtered Topic Data",
                     filtered_topic_df.to_csv(index=False),
-                    file_name=f"filtered_{uploaded_topic_file.name.replace('.xlsx', '.csv')}",
+                    file_name=f"filtered_{clean_csv_name}",
                     mime="text/csv",
                     key="download_topic_csv"
                 )
