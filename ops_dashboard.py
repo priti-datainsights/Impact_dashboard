@@ -2437,8 +2437,7 @@ def render_ops_dashboard():
                             return lower_map[cand.lower()]
                     return None
 
-                col_score   = _pick_col(bl_raw, [
-                # ── BASELINE SCORE COLUMN DETECTION ──────────────────────────────
+                # ── BASELINE SCORE COLUMN DETECTION ────────────────────────────── 
                 col_score = _pick_col(bl_raw, [
                     "Baseline%", "Baseline %", "BL%", "BL %",
                     "Baseline Score", "Score%", "Score %",
@@ -2455,7 +2454,6 @@ def render_ops_dashboard():
                     "Marks Scored", "Obtained Score", "Score Obtained"
                 ])
 
-                # Calculate percentage using Total Marks and Obtained Marks
                 if col_score is None:
                     if col_total_marks and col_obtained_marks:
                         total_marks = pd.to_numeric(
@@ -2479,12 +2477,10 @@ def render_ops_dashboard():
                         st.write("Available columns:", bl_raw.columns.tolist())
                         st.stop()
 
-                # Convert percentage to numeric and remove invalid records
                 bl_raw[col_score] = pd.to_numeric(
                     bl_raw[col_score], errors="coerce"
                 )
                 bl_raw = bl_raw.dropna(subset=[col_score])
-                            elif v < 70:
                                 return "Developing (40–69%)"
                             return "Proficient (≥70%)"
 
