@@ -2575,3 +2575,122 @@ def render_ops_dashboard():
                 c3, c4 = st.columns(2)
                 with c3:
                     if col_subject:
+                        st.markdown("##### Avg Baseline % by Subject")
+                        sub_bl = (
+                            bl_df.groupby(col_subject)["_score"].mean()
+                            .reset_index().rename(columns={"_score": "Avg BL%"})
+                            .sort_values("Avg BL%", ascending=True)
+                        )
+                        fig_sub_bl = px.bar(
+                            sub_bl, x="Avg BL%", y=col_subject, orientation="h",
+                            text=sub_bl["Avg BL%"].round(1).astype(str) + "%",
+                            color="Avg BL%",
+                            color_continuous_scale=[P["coral"], P["amber"], P["green"]],
+                            range_color=[0, 100],
+                        )
+                        fig_sub_bl.update_traces(textposition="outside", marker_line_width=0)
+                        fig_sub_bl.update_coloraxes(showscale=False)
+                        _layout(fig_sub_bl, height=320, margin=dict(l=0, r=60, t=20, b=0))
+                        fig_sub_bl.update_layout(
+                            xaxis=dict(range=[0, 112], title="Avg Baseline %"),
+                            yaxis_title="",
+                        )
+                        st.plotly_chart(fig_sub_bl, use_container_width=True)
+
+                with c4:
+                    if col_subject and col_grade:
+                        st.markdown("##### Subject × Grade Avg Baseline %")
+                        sg_piv = bl_df.pivot_table(
+                            index=col_subject, columns=col_grade,
+                            values="_score", aggfunc="mean"
+                        ).fillna(0)
+                        fig_sg_bl = px.imshow(
+                            sg_piv, text_auto=".0f", aspect="auto",
+                            color_continuous_scale=["#fadbd8", P["amber"], P["teal"]],
+                            zmin=0, zmax=100,
+                        )
+                        fig_sg_bl.update_layout(
+                            height=320, plot_bgcolor=BG, paper_bgcolor=BG,
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            coloraxis_showscale=False,
+                        )
+                        st.plotly_chart(fig_sg_bl, use_container_width=True)
+
+                # ── Row 3: State & Gender Diagnostics ────────────────────────
+                if col_state or col_gender:
+                    st.markdown("---")
+                    c5, c6 = st.columns([1.4, 1])
+                    with c5:
+                        if col_state:
+                            st.markdown("##### State-wise Avg Baseline %")
+                            st_bl = (
+                                bl_df.groupby(col_state)["_score"].mean()
+                                .reset_index().rename(columns={"_score": "Avg BL%"})
+                                .sort_values("Avg BL%", ascending=True)
+                            )
+                            fig_st_bl = px.bar(
+                                st_bl, x="Avg BL%", y=col_state, orientation="h",
+                                text=st_bl["Avg BL%"].round(1).astype(str) + "%",
+                                color_discrete_sequence=[P["teal"]],
+                            )
+                            fig_st_bl.update_traces(textposition="outside", marker_line_width=0)
+                            _layout(fig_st_bl, height=max(260, len(st_bl) * 36), margin=dict(l=0, r=60, t=20, b=0))
+                            fig_st_bl.update_layout(
+                                xaxis=dict(range=[0, 112], title="Avg Baseline %"),
+                                yaxis_title="",
+                            )
+                            st.plotly_chart(fig_st_bl, use_container_width=True)
+                    with c6:
+                        if col_gender and col_subject:
+                            st.markdown("##### Gender Comparison by Subject")
+                            gen_bl = bl_df.groupby([col_subject, col_gender])["_score"].mean().reset_index()
+                            fig_gen_bl = px.bar(
+                                gen_bl, x=col_subject, y="_score", color=col_gender,
+                                barmode="group", text_auto=".1f",
+                                color_discrete_map={
+                                    "Male": P["teal"], "Female": P["coral"],
+                                    "Boys": P["teal"], "Girls": P["coral"],
+                                },
+                            )
+                            _layout(fig_gen_bl, height=300, legend_bottom=True)
+                            fig_gen_bl.update_layout(
+                                yaxis=dict(range=[0, 105], title="Avg BL %"),
+                                xaxis_title="",
+                            )
+                            st.plotly_chart(fig_gen_bl, use_container_width=True)
+
+                # ── Priority Centres Table ───────────────────────────────────
+                if col_center:
+                    st.markdown("---")
+                    st.markdown("##### 🏫 Centre Baseline Leaderboard (Lowest to Highest — Priority Support)")
+                    ctr_grp_cols = [col_center] + ([col_state] if col_state else [])
+                    ctr_bl = (
+                        bl_df.groupby(ctr_grp_cols).agg(
+                            Assessments=("_score", "count"),
+                            Avg_BL_Pct=("_score", "mean"),
+                            Needs_Support_Pct=("_score", lambda s: (s < 40).mean() * 100),
+                            Proficient_Pct=("_score", lambda s: (s >= 70).mean() * 100),
+                        ).reset_index()
+                        .sort_values("Avg_BL_Pct", ascending=True)
+                    )
+                    st.dataframe(
+                        ctr_bl,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=380,
+                        column_config={
+                            "Avg_BL_Pct": st.column_config.ProgressColumn(
+                                "Avg BL %", min_value=0, max_value=100, format="%.1f%%"
+                            ),
+                            "Needs_Support_Pct": st.column_config.NumberColumn(
+                                "Needs Support %", format="%.1f%%"
+                            ),
+                            "Proficient_Pct": st.column_config.NumberColumn(
+                                "Proficient %", format="%.1f%%"
+                            ),
+                        },
+                    )
+
+
+# Alias so `from ops_dashboard import show_dashboard` in app.py works seamlessly
+show_dashboard = render_ops_dashboard
