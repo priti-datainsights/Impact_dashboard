@@ -2438,54 +2438,52 @@ def render_ops_dashboard():
                     return None
 
                 col_score   = _pick_col(bl_raw, [
+                # ── BASELINE SCORE COLUMN DETECTION ──────────────────────────────
+                col_score = _pick_col(bl_raw, [
                     "Baseline%", "Baseline %", "BL%", "BL %",
-                    "Baseline Score", "Score%", "Score %", "Percentage", "Marks %"
+                    "Baseline Score", "Score%", "Score %",
+                    "Percentage", "Marks %"
                 ])
-                col_student = _pick_col(bl_raw, ["Student ID", "Student_ID", "Student Name", "Child ID", "Enrollment ID"])
-                col_center  = _pick_col(bl_raw, ["Center Name", "Center", "Centre Name", "Centre"])
-                col_state   = _pick_col(bl_raw, ["State", "Center State"])
-                col_subject = _pick_col(bl_raw, ["Subject", "Subject Name"])
-                col_grade   = _pick_col(bl_raw, ["Grade", "Class"])
-                col_gender  = _pick_col(bl_raw, ["Gender", "Sex"])
 
+                col_total_marks = _pick_col(bl_raw, [
+                    "Total Marks", "Maximum Marks", "Max Marks",
+                    "Total Score", "Maximum Score"
+                ])
+
+                col_obtained_marks = _pick_col(bl_raw, [
+                    "Obtained Marks", "Marks Obtained",
+                    "Marks Scored", "Obtained Score", "Score Obtained"
+                ])
+
+                # Calculate percentage using Total Marks and Obtained Marks
                 if col_score is None:
-                    st.error(
-                        f"⚠️ Could not detect a percentage score column. Found columns: `{list(bl_raw.columns)}`. "
-                        "Ensure a column like `Baseline%`, `BL %`, or `Percentage` exists."
-                    )
-                else:
-                    bl_df = bl_raw.copy()
-                    bl_df["_score"] = pd.to_numeric(bl_df[col_score], errors="coerce")
-                    bl_df = bl_df.dropna(subset=["_score"])
+                    if col_total_marks and col_obtained_marks:
+                        total_marks = pd.to_numeric(
+                            bl_raw[col_total_marks], errors="coerce"
+                        )
+                        obtained_marks = pd.to_numeric(
+                            bl_raw[col_obtained_marks], errors="coerce"
+                        )
 
-                    # ── In-Tab Filters ───────────────────────────────────────
-                    with st.expander("🔍 Baseline Filters", expanded=True):
-                        f1, f2, f3 = st.columns(3)
-                        with f1:
-                            if col_state:
-                                st_opts = sorted(bl_df[col_state].dropna().astype(str).unique())
-                                sel_bl_state = st.multiselect("State", st_opts, default=st_opts, key="bl_only_state")
-                                if sel_bl_state:
-                                    bl_df = bl_df[bl_df[col_state].astype(str).isin(sel_bl_state)]
-                        with f2:
-                            if col_subject:
-                                sub_opts = sorted(bl_df[col_subject].dropna().astype(str).unique())
-                                sel_bl_sub = st.multiselect("Subject", sub_opts, default=sub_opts, key="bl_only_sub")
-                                if sel_bl_sub:
-                                    bl_df = bl_df[bl_df[col_subject].astype(str).isin(sel_bl_sub)]
-                        with f3:
-                            if col_grade:
-                                grd_opts = sorted(bl_df[col_grade].dropna().astype(str).unique())
-                                sel_bl_grd = st.multiselect("Grade", grd_opts, default=grd_opts, key="bl_only_grd")
-                                if sel_bl_grd:
-                                    bl_df = bl_df[bl_df[col_grade].astype(str).isin(sel_bl_grd)]
-
-                    if bl_df.empty:
-                        st.info("No records match the selected Baseline filters.")
+                        bl_raw["Baseline %"] = (
+                            obtained_marks.div(
+                                total_marks.where(total_marks > 0)
+                            ) * 100
+                        )
+                        col_score = "Baseline %"
                     else:
-                        def _tier(v):
-                            if v < 40:
-                                return "Needs Support (<40%)"
+                        st.error(
+                            "Could not identify Baseline percentage or "
+                            "Total Marks and Obtained Marks columns."
+                        )
+                        st.write("Available columns:", bl_raw.columns.tolist())
+                        st.stop()
+
+                # Convert percentage to numeric and remove invalid records
+                bl_raw[col_score] = pd.to_numeric(
+                    bl_raw[col_score], errors="coerce"
+                )
+                bl_raw = bl_raw.dropna(subset=[col_score])
                             elif v < 70:
                                 return "Developing (40–69%)"
                             return "Proficient (≥70%)"
