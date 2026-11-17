@@ -2437,10 +2437,56 @@ def render_ops_dashboard():
                             return lower_map[cand.lower()]
                     return None
 
-                col_score   = _pick_col(bl_raw, [
-                    "Baseline%", "Baseline %", "BL%", "BL %",
-                    "Baseline Score", "Score%", "Score %", "Percentage", "Marks %"
-                ])
+                
+# ── BASELINE SCORE COLUMN DETECTION ──────────────────────────────
+col_score = _pick_col(bl_raw, [
+    "Baseline%", "Baseline %", "BL%", "BL %",
+    "Baseline Score", "Score%", "Score %",
+    "Percentage", "Marks %"
+])
+
+col_total_marks = _pick_col(bl_raw, [
+    "Total Marks", "Maximum Marks", "Max Marks",
+    "Total Score", "Maximum Score"
+])
+
+col_obtained_marks = _pick_col(bl_raw, [
+    "Obtained Marks", "Marks Obtained",
+    "Marks Scored", "Obtained Score", "Score Obtained"
+])
+
+# Calculate percentage when the Excel file contains marks instead
+if col_score is None:
+    if col_total_marks and col_obtained_marks:
+        total_marks = pd.to_numeric(
+            bl_raw[col_total_marks], errors="coerce"
+        )
+        obtained_marks = pd.to_numeric(
+            bl_raw[col_obtained_marks], errors="coerce"
+        )
+
+        bl_raw["Baseline %"] = (
+            obtained_marks.div(total_marks.where(total_marks > 0))
+            * 100
+        )
+
+        col_score = "Baseline %"
+    else:
+        st.error(
+            "Could not identify a Baseline percentage or both "
+            "Total Marks and Obtained Marks columns."
+        )
+        st.write("Available columns:", bl_raw.columns.tolist())
+        st.stop()
+
+# Convert the final score to numeric
+bl_raw[col_score] = pd.to_numeric(
+    bl_raw[col_score], errors="coerce"
+)
+
+# Remove invalid percentage records
+bl_raw = bl_raw.dropna(subset=[col_score])
+
                 col_student = _pick_col(bl_raw, ["Student ID", "Student_ID", "Student Name", "Child ID", "Enrollment ID"])
                 col_center  = _pick_col(bl_raw, ["Center Name", "Center", "Centre Name", "Centre"])
                 col_state   = _pick_col(bl_raw, ["State", "Center State"])
