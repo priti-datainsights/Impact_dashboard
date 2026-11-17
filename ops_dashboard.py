@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 ops_dashboard.py
 ================
@@ -9,7 +10,7 @@ Quarterly, or Half-Yearly reporting modes. See discover_monthly_files().
 Sheets used (VRM)
 ─────────────────
   Active VT            — primary operational data (one row per vol-offering)
-  Dropped VT            — volunteers who dropped their offering(s)
+  Dropped VT           — volunteers who dropped their offering(s)
   Newly Registered VT  — all volunteers who registered in the current period
 
 Sheets used (DRM)
@@ -118,6 +119,8 @@ def discover_topic_monthly_files(data_dir: str) -> dict:
         filenames = []
 
     for fname in filenames:
+        if fname.startswith("~$"):
+            continue
         match = TOPIC_MONTH_FILE_RE.match(fname)
         if not match:
             continue
@@ -326,6 +329,7 @@ def _apply_aliases(df: pd.DataFrame, aliases: dict) -> pd.DataFrame:
                 break
     return df.rename(columns=rename_map) if rename_map else df
 
+
 # ── Colour palette ────────────────────────────────────────────────────────────
 P = {
     "teal":    "#0094c9",
@@ -524,6 +528,7 @@ def load_data(path: str) -> dict:
 
     return {"active": active, "dropped": dropped, "new_reg": new_reg}
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DRM DATA LOADING
 # ─────────────────────────────────────────────────────────────────────────────
@@ -668,7 +673,7 @@ def _insight_box(text: str, color: str = "#ba7517", bg: str = "#faeeda") -> str:
 # MAIN RENDER
 # ─────────────────────────────────────────────────────────────────────────────
 def render_ops_dashboard():
-    # Ensure all 6 tabs fit cleanly on a single row without clipping off-screen
+    # Ensure all tabs fit cleanly on a single row without clipping off-screen
     st.markdown(
         """
         <style>
@@ -1055,20 +1060,20 @@ def render_ops_dashboard():
 
             st.markdown("#### Volunteer Overview")
             kc1, kc2, kc3, kc4 = st.columns(4)
-            kc1.markdown(_kpi("Total Volunteers",   f"{total_vols_offering:,}", P["teal"],   "vol-offering rows"),   unsafe_allow_html=True)
-            kc2.markdown(_kpi("Unique Volunteers",  f"{unique_vols:,}",         P["green"],  "deduplicated"),        unsafe_allow_html=True)
+            kc1.markdown(_kpi("Total Volunteers",   f"{total_vols_offering:,}", P["teal"],   "vol-offering rows"),        unsafe_allow_html=True)
+            kc2.markdown(_kpi("Unique Volunteers",  f"{unique_vols:,}",         P["green"],  "deduplicated"),             unsafe_allow_html=True)
             kc3.markdown(_kpi("Newly Registered",   f"{new_vols:,}",            P["violet"], "from registrations sheet"), unsafe_allow_html=True)
-            kc4.markdown(_kpi("Dropped Volunteers", f"{dropped_vols:,}",        P["coral"],  "from dropped sheet"),  unsafe_allow_html=True)
+            kc4.markdown(_kpi("Dropped Volunteers", f"{dropped_vols:,}",        P["coral"],  "from dropped sheet"),       unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
 
             ki1, ki2, ki3, ki4, ki5, ki6 = st.columns(6)
-            ki1.markdown(_kpi("Active Centres",   f"{active_centres:,}",  P["teal"],   "unique"),             unsafe_allow_html=True)
-            ki2.markdown(_kpi("Enrolled Students",f"{total_enrolled:,}",  P["green"],  "total seats"),        unsafe_allow_html=True)
-            ki3.markdown(_kpi("Total Vol Hrs",    f"{total_vol_hrs:,}",   P["orange"], "Comp + Offline hrs"), unsafe_allow_html=True)
-            ki4.markdown(_kpi("Total CLH",        f"{total_clh:,}",       P["violet"], "child learning hrs"), unsafe_allow_html=True)
-            ki5.markdown(_kpi("Avg Attendance",   avg_att_display,        P["amber"],  "across sessions"),    unsafe_allow_html=True)
-            ki6.markdown(_kpi("Class Completion", f"{completion_rt:.1f}%",P["mint"],   "completed / planned"),unsafe_allow_html=True)
+            ki1.markdown(_kpi("Active Centres",   f"{active_centres:,}",  P["teal"],   "unique"),              unsafe_allow_html=True)
+            ki2.markdown(_kpi("Enrolled Students",f"{total_enrolled:,}",  P["green"],  "total seats"),         unsafe_allow_html=True)
+            ki3.markdown(_kpi("Total Vol Hrs",    f"{total_vol_hrs:,}",   P["orange"], "Comp + Offline hrs"),  unsafe_allow_html=True)
+            ki4.markdown(_kpi("Total CLH",        f"{total_clh:,}",       P["violet"], "child learning hrs"),  unsafe_allow_html=True)
+            ki5.markdown(_kpi("Avg Attendance",   avg_att_display,        P["amber"],  "across sessions"),     unsafe_allow_html=True)
+            ki6.markdown(_kpi("Class Completion", f"{completion_rt:.1f}%",P["mint"],   "completed / planned"), unsafe_allow_html=True)
 
             st.markdown("---")
 
@@ -2100,575 +2105,4 @@ def render_ops_dashboard():
                         column_config={
                             "CLH":    st.column_config.NumberColumn("CLH",    format="%d"),
                             "Comp %": st.column_config.ProgressColumn(
-                                "Comp %", min_value=0, max_value=100, format="%.1f%%"
-                            ),
-                            "Att %":  st.column_config.ProgressColumn(
-                                "Att %",  min_value=0, max_value=100, format="%.1f%%"
-                            ),
-                        },
-                    )
-
-                st.markdown("---")
-
-                st.markdown("#### 🗂️ Full Centre Scorecard")
-                st.caption(
-                    f"All {total_centres} active centres ranked by CLH delivered. &nbsp;"
-                    "🟢 ≥ 90% completion &nbsp; 🟡 70–90% &nbsp; 🔴 < 70% &nbsp;|&nbsp; "
-                    "Click any column header to re-sort."
-                )
-                drm_display = drm[[
-                    "Center Name", "State", "Donor Name",
-                    "Live Volunteers", "Planned", "Completed", "Offline", "Cancelled",
-                    "Completion%", "Cancellation%",
-                    "Live_CLH", "Enrolled", "En Boys", "En Girls",
-                    "Attendance %", "Girl%"
-                ]].copy().rename(columns={
-                    "Donor Name":     "Donor",
-                    "Live Volunteers":"Vols",
-                    "Completion%":    "Comp %",
-                    "Cancellation%":  "Canc %",
-                    "Live_CLH":       "CLH",
-                    "Attendance %":   "Att %",
-                    "Girl%":          "Girl %",
-                })
-                drm_display["Att %"]  = drm_display["Att %"].round(1)
-                drm_display["Comp %"] = drm_display["Comp %"].round(1)
-                drm_display["Girl %"] = drm_display["Girl %"].round(1)
-                drm_display["Canc %"] = drm_display["Canc %"].round(1)
-                drm_display = drm_display.sort_values("CLH", ascending=False)
-
-                st.dataframe(
-                    drm_display,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=520,
-                    column_config={
-                        "Comp %": st.column_config.ProgressColumn(
-                            "Comp %", min_value=0, max_value=100, format="%.1f%%"
-                        ),
-                        "Att %":  st.column_config.ProgressColumn(
-                            "Att %",  min_value=0, max_value=100, format="%.1f%%"
-                        ),
-                        "CLH":    st.column_config.NumberColumn("CLH",    format="%d"),
-                        "Girl %": st.column_config.NumberColumn("Girl %", format="%.1f%%"),
-                        "Canc %": st.column_config.NumberColumn("Canc %", format="%.1f%%"),
-                    },
-                )
-
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.markdown(
-                    f"""<div style='text-align:center;color:#b2bec3;font-size:0.75em;
-                            padding:16px;border-top:1px solid #dee2e6;margin-top:8px;'>
-                        eVidyaloka Programme Impact Report &nbsp;·&nbsp; {period_label}
-                        &nbsp;·&nbsp; {total_centres} centres &nbsp;·&nbsp;
-                        {drm_total_vols} volunteers &nbsp;·&nbsp;
-                        {total_students:,} students &nbsp;·&nbsp;
-                        {total_clh_drm:,} child learning hours
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 5 — TOPIC & SUBTOPIC ANALYTICS (MONTH MULTI-SELECT)
-    # ═════════════════════════════════════════════════════════════════════════
-    with tab_top:
-        st.markdown("### 📑 Topic & SubTopic Analytics Dashboard")
-        st.caption(
-            "Select one or more months. The dashboard loads the matching "
-            "Topic_<Month>_<Year>.xlsx workbooks from the application folder."
-        )
-
-        topic_month_files = discover_topic_monthly_files(DATA_DIR)
-
-        if not topic_month_files:
-            st.warning(
-                f"No monthly Topic workbooks found in `{DATA_DIR}`. "
-                "Add files named like `Topic_April_2026.xlsx` and `Topic_May_2026.xlsx`."
-            )
-        else:
-            topic_month_labels = list(topic_month_files.keys())
-            selected_topic_months = st.multiselect(
-                "📅 Select Topic Reporting Months",
-                options=topic_month_labels,
-                default=[topic_month_labels[-1]],
-                key="topic_selected_months",
-                placeholder="Select one or more months",
-            )
-
-            if not selected_topic_months:
-                st.info("Select at least one month to load Topic & SubTopic analytics.")
-            else:
-                selected_topic_paths = {
-                    month: topic_month_files[month]
-                    for month in selected_topic_months
-                }
-
-                @st.cache_data(show_spinner=False)
-                def load_topic_monthly_data(month_path_items):
-                    """Load and combine Topic, Cancelled, and Offline sheets by month."""
-                    topic_frames, cancelled_frames, offline_frames = [], [], []
-                    errors = []
-
-                    def _normalise_sheet(value):
-                        return " ".join(str(value).strip().lower().split())
-
-                    for month_label, file_path in month_path_items:
-                        try:
-                            xl = pd.ExcelFile(file_path)
-                            sheet_map = {_normalise_sheet(s): s for s in xl.sheet_names}
-
-                            sheet_targets = {
-                                "topic": "topic-subtopic",
-                                "cancelled": "cancelled sessions",
-                                "offline": "offline sessions",
-                            }
-
-                            for key, target in sheet_targets.items():
-                                actual_sheet = sheet_map.get(target)
-                                if actual_sheet is None:
-                                    continue
-                                frame = pd.read_excel(xl, sheet_name=actual_sheet)
-                                if frame.empty:
-                                    continue
-                                frame["Source Month"] = month_label
-                                if key == "topic":
-                                    topic_frames.append(frame)
-                                elif key == "cancelled":
-                                    cancelled_frames.append(frame)
-                                else:
-                                    offline_frames.append(frame)
-                        except Exception as exc:
-                            errors.append(f"{month_label}: {exc}")
-
-                    topic_all = pd.concat(topic_frames, ignore_index=True) if topic_frames else pd.DataFrame()
-                    cancelled_all = pd.concat(cancelled_frames, ignore_index=True) if cancelled_frames else pd.DataFrame()
-                    offline_all = pd.concat(offline_frames, ignore_index=True) if offline_frames else pd.DataFrame()
-                    return topic_all, cancelled_all, offline_all, errors
-
-                topic_month_path_items = tuple(
-                    (month, selected_topic_paths[month]) for month in selected_topic_months
-                )
-                with st.spinner("Loading Topic & SubTopic data for selected months..."):
-                    topic_df, cancelled_df, offline_df, topic_load_errors = load_topic_monthly_data(
-                        topic_month_path_items
-                    )
-
-                if topic_load_errors:
-                    st.warning("Some monthly workbooks could not be read: " + " | ".join(topic_load_errors))
-
-                st.caption("Selected months: " + ", ".join(selected_topic_months))
-
-                if topic_df.empty:
-                    st.error(
-                        "No data found in the `Topic-SubTopic` sheet for the selected months. "
-                        "Check that each workbook contains a non-empty `Topic-SubTopic` sheet."
-                    )
-                else:
-                    # ── IN-TAB FILTERS ──────────────────────────────────────
-                    with st.expander("📊 Topic Filters", expanded=True):
-                        fc1, fc2, fc3 = st.columns(3)
-
-                        state_col = "state" if "state" in topic_df.columns else "State"
-                        subject_col = "subject" if "subject" in topic_df.columns else "Subject"
-                        grade_col = "grade" if "grade" in topic_df.columns else "Grade"
-
-                        with fc1:
-                            st_opts = sorted(topic_df[state_col].dropna().astype(str).unique()) if state_col in topic_df.columns else []
-                            t_state_filter = st.multiselect("State", st_opts, key="tab5_state")
-
-                        state_df = topic_df[
-                            topic_df[state_col].astype(str).isin(t_state_filter)
-                        ] if t_state_filter and state_col in topic_df.columns else topic_df.copy()
-
-                        with fc2:
-                            sub_opts = sorted(state_df[subject_col].dropna().astype(str).unique()) if subject_col in state_df.columns else []
-                            t_subject_filter = st.multiselect("Subject", sub_opts, key="tab5_subject")
-
-                        subject_df = state_df[
-                            state_df[subject_col].astype(str).isin(t_subject_filter)
-                        ] if t_subject_filter and subject_col in state_df.columns else state_df.copy()
-
-                        with fc3:
-                            grd_opts = sorted(subject_df[grade_col].dropna().astype(str).unique()) if grade_col in subject_df.columns else []
-                            t_grade_filter = st.multiselect("Grade", grd_opts, key="tab5_grade")
-
-                        filtered_topic_df = subject_df[
-                            subject_df[grade_col].astype(str).isin(t_grade_filter)
-                        ] if t_grade_filter and grade_col in subject_df.columns else subject_df.copy()
-
-                    # ── KPI METRICS ─────────────────────────────────────────
-                    total_sessions = len(filtered_topic_df)
-                    unique_topics = filtered_topic_df["topic_name"].nunique() if "topic_name" in filtered_topic_df.columns else 0
-                    unique_subtopics = filtered_topic_df["sub_topic_name"].nunique() if "sub_topic_name" in filtered_topic_df.columns else 0
-                    unique_centers = (
-                        filtered_topic_df["center_id"].nunique() if "center_id" in filtered_topic_df.columns
-                        else filtered_topic_df["center_name"].nunique() if "center_name" in filtered_topic_df.columns
-                        else 0
-                    )
-
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Total Sessions", f"{total_sessions:,}")
-                    col2.metric("Unique Topics", f"{unique_topics:,}")
-                    col3.metric("Unique Subtopics", f"{unique_subtopics:,}")
-                    col4.metric("Active Centers", f"{unique_centers:,}")
-
-                    st.markdown("---")
-                    top_tab1, top_tab2, top_tab3 = st.tabs([
-                        "📋 Topic Analysis", "❌ Cancelled Sessions", "⏸️ Offline Sessions"
-                    ])
-
-                    with top_tab1:
-                        if "topic_name" in filtered_topic_df.columns:
-                            st.subheader("Top Topics")
-                            topic_summary = (
-                                filtered_topic_df.groupby("topic_name").size()
-                                .reset_index(name="Sessions")
-                                .sort_values("Sessions", ascending=False).head(20)
-                            )
-                            fig = px.bar(topic_summary, x="Sessions", y="topic_name", orientation="h", title="Top 20 Topics")
-                            st.plotly_chart(fig, use_container_width=True)
-
-                        if "sub_topic_name" in filtered_topic_df.columns:
-                            st.subheader("Top Sub Topics")
-                            subtopic_summary = (
-                                filtered_topic_df.groupby("sub_topic_name").size()
-                                .reset_index(name="Sessions")
-                                .sort_values("Sessions", ascending=False).head(20)
-                            )
-                            fig2 = px.bar(subtopic_summary, x="Sessions", y="sub_topic_name", orientation="h", title="Top 20 Sub Topics")
-                            st.plotly_chart(fig2, use_container_width=True)
-
-                        if subject_col in filtered_topic_df.columns:
-                            st.subheader("Subject Distribution")
-                            subject_chart = filtered_topic_df.groupby(subject_col).size().reset_index(name="Count")
-                            fig3 = px.pie(subject_chart, names=subject_col, values="Count")
-                            st.plotly_chart(fig3, use_container_width=True)
-
-                        if "Source Month" in filtered_topic_df.columns:
-                            st.subheader("Sessions by Selected Month")
-                            month_summary = filtered_topic_df.groupby("Source Month").size().reset_index(name="Sessions")
-                            fig_month = px.bar(month_summary, x="Source Month", y="Sessions", title="Topic Sessions by Month")
-                            st.plotly_chart(fig_month, use_container_width=True)
-
-                    with top_tab2:
-                        st.subheader("Cancelled Session Analysis")
-                        if not cancelled_df.empty:
-                            st.metric("Total Cancelled Sessions", f"{len(cancelled_df):,}")
-                            cancel_reason_col = next((c for c in ("cancel_reason", "Cancel_reason") if c in cancelled_df.columns), None)
-                            if cancel_reason_col:
-                                cancel_chart = cancelled_df.groupby(cancel_reason_col).size().reset_index(name="Count").sort_values("Count", ascending=False).head(15)
-                                fig4 = px.bar(cancel_chart, x="Count", y=cancel_reason_col, orientation="h", title="Cancellation Reasons")
-                                st.plotly_chart(fig4, use_container_width=True)
-                            canc_state_col = next((c for c in ("State", "state") if c in cancelled_df.columns), None)
-                            if canc_state_col:
-                                state_cancel = cancelled_df.groupby(canc_state_col).size().reset_index(name="Count").sort_values("Count", ascending=False)
-                                fig5 = px.bar(state_cancel, x=canc_state_col, y="Count", title="Cancelled Sessions by State")
-                                st.plotly_chart(fig5, use_container_width=True)
-                        else:
-                            st.info("No cancelled sessions data found in the selected monthly workbooks.")
-
-                    with top_tab3:
-                        st.subheader("Offline Session Analysis")
-                        if not offline_df.empty:
-                            st.metric("Total Offline Sessions", f"{len(offline_df):,}")
-                            offline_reason_col = next((c for c in ("Offline reason", "offline_reason") if c in offline_df.columns), None)
-                            if offline_reason_col:
-                                offline_reason = offline_df.groupby(offline_reason_col).size().reset_index(name="Count").sort_values("Count", ascending=False)
-                                fig6 = px.bar(offline_reason, x="Count", y=offline_reason_col, orientation="h", title="Offline Reasons")
-                                st.plotly_chart(fig6, use_container_width=True)
-                            off_state_col = next((c for c in ("State", "state") if c in offline_df.columns), None)
-                            if off_state_col:
-                                state_offline = offline_df.groupby(off_state_col).size().reset_index(name="Count").sort_values("Count", ascending=False)
-                                fig7 = px.bar(state_offline, x=off_state_col, y="Count", title="Offline Sessions by State")
-                                st.plotly_chart(fig7, use_container_width=True)
-                        else:
-                            st.info("No offline sessions data found in the selected monthly workbooks.")
-
-                    st.markdown("---")
-                    month_slug = "_".join(re.sub(r"[^A-Za-z0-9]+", "_", m).strip("_") for m in selected_topic_months)
-                    st.download_button(
-                        "📥 Download Filtered Topic Data",
-                        filtered_topic_df.to_csv(index=False),
-                        file_name=f"filtered_topic_data_{month_slug}.csv",
-                        mime="text/csv",
-                        key="download_topic_csv",
-                    )
-
-    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 6 — BASELINE ONLY METRICS
-    # ═════════════════════════════════════════════════════════════════════════
-    with tab_bl:
-        st.markdown("### 🎯 Baseline-Only Impact Metrics")
-        st.caption(
-            "This is a separate Baseline-only analysis. It uses the uploaded Baseline assessment file "
-            "and does not combine Baseline scores with Endline results or other dashboard metrics."
-        )
-
-        bl_file = st.file_uploader(
-            "📁 Upload Baseline Assessment File (.xlsx)",
-            type=["xlsx", "xls"],
-            key="bl_only_uploader",
-        )
-
-        if bl_file is None:
-            st.info("👆 Upload your Baseline Excel file above to view Baseline-only metrics and visuals.")
-        else:
-            @st.cache_data(show_spinner=False)
-            def _load_bl_only(file):
-                xl = pd.ExcelFile(file)
-                target_sheet = xl.sheet_names[0]
-                for s in xl.sheet_names:
-                    if any(k in s.lower() for k in ("baseline", "bl", "score", "data")):
-                        target_sheet = s
-                        break
-                df_b = pd.read_excel(xl, sheet_name=target_sheet)
-                df_b.columns = df_b.columns.str.strip()
-                return df_b
-
-            bl_raw = _load_bl_only(bl_file)
-
-            if bl_raw.empty:
-                st.error("⚠️ The uploaded Baseline sheet is empty.")
-            else:
-                def _pick_col(df_check, candidates):
-                    lower_map = {c.lower().strip(): c for c in df_check.columns}
-                    for cand in candidates:
-                        if cand.lower() in lower_map:
-                            return lower_map[cand.lower()]
-                    return None
-
-                # ── BASELINE SCORE COLUMN DETECTION ────────────────────────────── 
-                col_score = _pick_col(bl_raw, [
-                    "Baseline%", "Baseline %", "BL%", "BL %",
-                    "Baseline Score", "Score%", "Score %",
-                    "Percentage", "Marks %"
-                ])
-
-                col_total_marks = _pick_col(bl_raw, [
-                    "Total Marks", "Maximum Marks", "Max Marks",
-                    "Total Score", "Maximum Score"
-                ])
-
-                col_obtained_marks = _pick_col(bl_raw, [
-                    "Obtained Marks", "Marks Obtained",
-                    "Marks Scored", "Obtained Score", "Score Obtained"
-                ])
-
-                if col_score is None:
-                    if col_total_marks and col_obtained_marks:
-                        total_marks = pd.to_numeric(
-                            bl_raw[col_total_marks], errors="coerce"
-                        )
-                        obtained_marks = pd.to_numeric(
-                            bl_raw[col_obtained_marks], errors="coerce"
-                        )
-
-                        bl_raw["Baseline %"] = (
-                            obtained_marks.div(
-                                total_marks.where(total_marks > 0)
-                            ) * 100
-                        )
-                        col_score = "Baseline %"
-                    else:
-                        st.error(
-                            "Could not identify Baseline percentage or "
-                            "Total Marks and Obtained Marks columns."
-                        )
-                        st.write("Available columns:", bl_raw.columns.tolist())
-                        st.stop()
-
-                bl_raw[col_score] = pd.to_numeric(
-                    bl_raw[col_score], errors="coerce"
-                )
-                bl_raw = bl_raw.dropna(subset=[col_score])
-                                return "Developing (40–69%)"
-                            return "Proficient (≥70%)"
-
-                        bl_df["Proficiency Tier"] = bl_df["_score"].apply(_tier)
-
-                        # ── KPI Strip ────────────────────────────────────────
-                        n_assessed  = bl_df[col_student].nunique() if col_student else len(bl_df)
-                        avg_bl      = bl_df["_score"].mean()
-                        med_bl      = bl_df["_score"].median()
-                        prof_pct    = (bl_df["_score"] >= 70).mean() * 100
-                        support_pct = (bl_df["_score"] < 40).mean() * 100
-                        n_centres   = bl_df[col_center].nunique() if col_center else 0
-
-                        k1, k2, k3, k4, k5 = st.columns(5)
-                        k1.markdown(_kpi("Students Assessed", f"{n_assessed:,}",   P["teal"],   f"{n_centres} centres" if col_center else "total rows"), unsafe_allow_html=True)
-                        k2.markdown(_kpi("Avg BL Score",      f"{avg_bl:.1f}%",     P["violet"], f"median {med_bl:.1f}%"), unsafe_allow_html=True)
-                        k3.markdown(_kpi("Proficient (≥70%)", f"{prof_pct:.1f}%",   P["green"],  "ready / strong"), unsafe_allow_html=True)
-                        k4.markdown(_kpi("Needs Support",     f"{support_pct:.1f}%",P["red"],    "below 40%"), unsafe_allow_html=True)
-                        k5.markdown(_kpi("Total Assessments", f"{len(bl_df):,}",    P["amber"],  "subject-student tests"), unsafe_allow_html=True)
-
-                        st.markdown("---")
-
-                        # ── Row 1: Proficiency Donut + Score Distribution ────
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.markdown("##### Proficiency Tier Breakdown")
-                            tier_df = bl_df["Proficiency Tier"].value_counts().reset_index()
-                            tier_df.columns = ["Tier", "Count"]
-                            fig_tier = px.pie(
-                                tier_df, names="Tier", values="Count", hole=0.48,
-                                color="Tier",
-                                color_discrete_map={
-                                    "Needs Support (<40%)": P["red"],
-                                    "Developing (40–69%)":  P["amber"],
-                                    "Proficient (≥70%)":    P["green"],
-                                },
-                            )
-                            fig_tier.update_traces(
-                                textposition="outside",
-                                texttemplate="<b>%{label}</b><br>%{percent:.1%}",
-                            )
-                            fig_tier.update_layout(
-                                height=320, showlegend=False,
-                                plot_bgcolor=BG, paper_bgcolor=BG,
-                                margin=dict(l=10, r=10, t=30, b=10),
-                            )
-                            st.plotly_chart(fig_tier, use_container_width=True)
-
-                        with c2:
-                            st.markdown("##### Baseline Score Distribution")
-                            fig_bl_hist = px.histogram(
-                                bl_df, x="_score", nbins=20,
-                                color_discrete_sequence=[P["teal"]], opacity=0.85,
-                            )
-                            fig_bl_hist.add_vline(
-                                x=avg_bl, line_dash="dash", line_color=P["red"],
-                                annotation_text=f"Mean {avg_bl:.1f}%"
-                            )
-                            _layout(fig_bl_hist, height=320)
-                            fig_bl_hist.update_layout(
-                                xaxis_title="Baseline Score %",
-                                yaxis_title="Assessments",
-                                bargap=0.05,
-                            )
-                            st.plotly_chart(fig_bl_hist, use_container_width=True)
-
-                        st.markdown("---")
-
-                        # ── Row 2: Subject & Grade Performance ───────────────
-                        c3, c4 = st.columns(2)
-                        with c3:
-                            if col_subject:
-                                st.markdown("##### Avg Baseline % by Subject")
-                                sub_bl = (
-                                    bl_df.groupby(col_subject)["_score"].mean()
-                                    .reset_index().rename(columns={"_score": "Avg BL%"})
-                                    .sort_values("Avg BL%", ascending=True)
-                                )
-                                fig_sub_bl = px.bar(
-                                    sub_bl, x="Avg BL%", y=col_subject, orientation="h",
-                                    text=sub_bl["Avg BL%"].round(1).astype(str) + "%",
-                                    color="Avg BL%",
-                                    color_continuous_scale=[P["coral"], P["amber"], P["green"]],
-                                    range_color=[0, 100],
-                                )
-                                fig_sub_bl.update_traces(textposition="outside", marker_line_width=0)
-                                fig_sub_bl.update_coloraxes(showscale=False)
-                                _layout(fig_sub_bl, height=320, margin=dict(l=0, r=60, t=20, b=0))
-                                fig_sub_bl.update_layout(
-                                    xaxis=dict(range=[0, 112], title="Avg Baseline %"),
-                                    yaxis_title="",
-                                )
-                                st.plotly_chart(fig_sub_bl, use_container_width=True)
-
-                        with c4:
-                            if col_subject and col_grade:
-                                st.markdown("##### Subject × Grade Avg Baseline %")
-                                sg_piv = bl_df.pivot_table(
-                                    index=col_subject, columns=col_grade,
-                                    values="_score", aggfunc="mean"
-                                ).fillna(0)
-                                fig_sg_bl = px.imshow(
-                                    sg_piv, text_auto=".0f", aspect="auto",
-                                    color_continuous_scale=["#fadbd8", P["amber"], P["teal"]],
-                                    zmin=0, zmax=100,
-                                )
-                                fig_sg_bl.update_layout(
-                                    height=320, plot_bgcolor=BG, paper_bgcolor=BG,
-                                    margin=dict(l=0, r=0, t=20, b=0),
-                                    coloraxis_showscale=False,
-                                )
-                                st.plotly_chart(fig_sg_bl, use_container_width=True)
-
-                        # ── Row 3: State & Gender Diagnostics ────────────────
-                        if col_state or col_gender:
-                            st.markdown("---")
-                            c5, c6 = st.columns([1.4, 1])
-                            with c5:
-                                if col_state:
-                                    st.markdown("##### State-wise Avg Baseline %")
-                                    st_bl = (
-                                        bl_df.groupby(col_state)["_score"].mean()
-                                        .reset_index().rename(columns={"_score": "Avg BL%"})
-                                        .sort_values("Avg BL%", ascending=True)
-                                    )
-                                    fig_st_bl = px.bar(
-                                        st_bl, x="Avg BL%", y=col_state, orientation="h",
-                                        text=st_bl["Avg BL%"].round(1).astype(str) + "%",
-                                        color_discrete_sequence=[P["teal"]],
-                                    )
-                                    fig_st_bl.update_traces(textposition="outside", marker_line_width=0)
-                                    _layout(fig_st_bl, height=max(260, len(st_bl) * 36), margin=dict(l=0, r=60, t=20, b=0))
-                                    fig_st_bl.update_layout(
-                                        xaxis=dict(range=[0, 112], title="Avg Baseline %"),
-                                        yaxis_title="",
-                                    )
-                                    st.plotly_chart(fig_st_bl, use_container_width=True)
-                            with c6:
-                                if col_gender and col_subject:
-                                    st.markdown("##### Gender Comparison by Subject")
-                                    gen_bl = bl_df.groupby([col_subject, col_gender])["_score"].mean().reset_index()
-                                    fig_gen_bl = px.bar(
-                                        gen_bl, x=col_subject, y="_score", color=col_gender,
-                                        barmode="group", text_auto=".1f",
-                                        color_discrete_map={
-                                            "Male": P["teal"], "Female": P["coral"],
-                                            "Boys": P["teal"], "Girls": P["coral"],
-                                        },
-                                    )
-                                    _layout(fig_gen_bl, height=300, legend_bottom=True)
-                                    fig_gen_bl.update_layout(
-                                        yaxis=dict(range=[0, 105], title="Avg BL %"),
-                                        xaxis_title="",
-                                    )
-                                    st.plotly_chart(fig_gen_bl, use_container_width=True)
-
-                        # ── Priority Centres Table ───────────────────────────
-                        if col_center:
-                            st.markdown("---")
-                            st.markdown("##### 🏫 Centre Baseline Leaderboard (Lowest to Highest — Priority Support)")
-                            ctr_grp_cols = [col_center] + ([col_state] if col_state else [])
-                            ctr_bl = (
-                                bl_df.groupby(ctr_grp_cols).agg(
-                                    Assessments=("_score", "count"),
-                                    Avg_BL_Pct=("_score", "mean"),
-                                    Needs_Support_Pct=("_score", lambda s: (s < 40).mean() * 100),
-                                    Proficient_Pct=("_score", lambda s: (s >= 70).mean() * 100),
-                                ).reset_index()
-                                .sort_values("Avg_BL_Pct", ascending=True)
-                            )
-                            st.dataframe(
-                                ctr_bl,
-                                use_container_width=True,
-                                hide_index=True,
-                                height=380,
-                                column_config={
-                                    "Avg_BL_Pct": st.column_config.ProgressColumn(
-                                        "Avg BL %", min_value=0, max_value=100, format="%.1f%%"
-                                    ),
-                                    "Needs_Support_Pct": st.column_config.NumberColumn(
-                                        "Needs Support %", format="%.1f%%"
-                                    ),
-                                    "Proficient_Pct": st.column_config.NumberColumn(
-                                        "Proficient %", format="%.1f%%"
-                                    ),
-                                },
-                            )
-
-
-# Alias so `from ops_dashboard import show_dashboard` in app.py works seamlessly
-show_dashboard = render_ops_dashboard
+                                "Comp %", min_value=0, max
