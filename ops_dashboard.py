@@ -3,9 +3,9 @@
 ops_dashboard.py
 ================
 Operations & Impact Command Center  —  eVidyaloka VRM
-Data source: auto-detected monthly workbooks named VRM_<Month>_<Year>.xlsx /
-DRM_<Month>_<Year>.xlsx (e.g. VRM_April_2026.xlsx), selected via Monthly,
-Quarterly, or Half-Yearly reporting modes. See discover_monthly_files().
+Data source: auto-detected monthly workbooks named VRM_<Month>_<Year>.xlsx,
+DRM_<Month>_<Year>.xlsx, and Topic_<Month>_<Year>.xlsx (e.g. VRM_April_2026.xlsx),
+selected via Monthly, Quarterly, or Half-Yearly reporting modes.
 
 Sheets used (VRM)
 ─────────────────
@@ -21,6 +21,12 @@ Sheets used (DRM)
   Offering Details     — one row per offering (grade × subject × centre)
   Active centers       — centre master with registration data
   New Enrolled student — mid-month new enrolments
+
+Sheets used (Topic)
+───────────────────
+  Topic-SubTopic       — session topic & subtopic coverage
+  Cancelled Sessions   — cancelled session details
+  Offline Sessions     — offline session details
 """
 
 import streamlit as st
@@ -39,9 +45,26 @@ DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 # Matches VRM_April_2026.xlsx, DRM_May_2026.xlsx, VRM__May__2026.xlsx, etc.
 MONTH_FILE_RE = re.compile(r"^(VRM|DRM)_+([A-Za-z]+)_+(\d{4})\.xlsx$", re.IGNORECASE)
 
+# Matches Topic_July_2026.xlsx, Topic_SubTopic_July_2026.xlsx, Topics_Jul_2026.xlsx, etc.
+TOPIC_FILE_RE = re.compile(
+    r"^Topics?(?:[_\-\s]+SubTopics?)?[_\-\s]+([A-Za-z]+)[_\-\s]+(\d{4})\.xlsx$",
+    re.IGNORECASE,
+)
+
 SHEET_ACTIVE  = "Active VT"
 SHEET_DROPPED = "Dropped VT"
 SHEET_NEW_REG = "Newly Registered VT "   # trailing space is in the file
+
+
+def _canonical_month_name(month_name: str) -> str:
+    """Normalize 'Jul' or 'JULY' to full month title ('July') when possible."""
+    cleaned = month_name.strip()
+    for fmt in ("%B", "%b"):
+        try:
+            return datetime.strptime(cleaned, fmt).strftime("%B")
+        except ValueError:
+            continue
+    return cleaned.title()
 
 
 def _month_sort_key(month_name: str) -> int:
@@ -57,9 +80,8 @@ def _month_sort_key(month_name: str) -> int:
 
 def discover_monthly_files(data_dir: str) -> dict:
     """
-    Scan `data_dir` for files matching the VRM_<Month>_<Year>.xlsx /
-    DRM_<Month>_<Year>.xlsx naming convention (case-insensitive) and group
-    them by reporting month.
+    Scan `data_dir` for monthly VRM, DRM, and Topic workbooks and group them
+    by reporting month ('Month Year').
     """
     months: dict[str, dict] = {}
     try:
@@ -68,15 +90,33 @@ def discover_monthly_files(data_dir: str) -> dict:
         filenames = []
 
     for fname in filenames:
-        match = MONTH_FILE_RE.match(fname)
-        if not match:
+        if fname.startswith("~$"):
             continue
-        kind, month_name, year = match.group(1).upper(), match.group(2).title(), match.group(3)
-        label = f"{month_name} {year}"
-        entry = months.setdefault(label, {"vrm": None, "drm": None})
-        entry["vrm" if kind == "VRM" else "drm"] = os.path.join(data_dir, fname)
 
-    months = {label: paths for label, paths in months.items() if paths["vrm"]}
+        match = MONTH_FILE_RE.match(fname)
+        if match:
+            kind = match.group(1).upper()
+            month_name = _canonical_month_name(match.group(2))
+            year = match.group(3)
+            label = f"{month_name} {year}"
+            entry = months.setdefault(label, {"vrm": None, "drm": None, "topic": None})
+            entry["vrm" if kind == "VRM" else "drm"] = os.path.join(data_dir, fname)
+            continue
+
+        t_match = TOPIC_FILE_RE.match(fname)
+        if t_match:
+            month_name = _canonical_month_name(t_match.group(1))
+            year = t_match.group(2)
+            label = f"{month_name} {year}"
+            entry = months.setdefault(label, {"vrm": None, "drm": None, "topic": None})
+            entry["topic"] = os.path.join(data_dir, fname)
+
+    # Keep months that have at least one primary dataset (VRM, DRM, or Topic)
+    months = {
+        label: paths
+        for label, paths in months.items()
+        if paths["vrm"] or paths["drm"] or paths["topic"]
+    }
 
     def _sort_key(label: str):
         month_name, year = label.rsplit(" ", 1)
@@ -86,7 +126,7 @@ def discover_monthly_files(data_dir: str) -> dict:
 
 
 def discover_excel_files(data_dir: str, exclude_vrm_drm: bool = True) -> list[str]:
-    """Return sorted list of .xlsx/.xls filenames in `data_dir` for manual selection."""
+    """Return sorted list of .xlsx/.xls filenames in `data_dir`."""
     try:
         filenames = os.listdir(data_dir)
     except OSError:
@@ -102,35 +142,6 @@ def discover_excel_files(data_dir: str, exclude_vrm_drm: bool = True) -> list[st
             continue
         results.append(fname)
     return sorted(results)
-
-
-# Matches Topic_April_2026.xlsx (case-insensitive).
-TOPIC_MONTH_FILE_RE = re.compile(
-    r"^Topic_+([A-Za-z]+)_+(\d{4})\.xlsx$", re.IGNORECASE
-)
-
-
-def discover_topic_monthly_files(data_dir: str) -> dict:
-    """Return {Month Year: full_path} for Topic_<Month>_<Year>.xlsx files."""
-    topic_files = {}
-    try:
-        filenames = os.listdir(data_dir)
-    except OSError:
-        filenames = []
-
-    for fname in filenames:
-        match = TOPIC_MONTH_FILE_RE.match(fname)
-        if not match:
-            continue
-        month_name, year = match.group(1).title(), match.group(2)
-        label = f"{month_name} {year}"
-        topic_files[label] = os.path.join(data_dir, fname)
-
-    return dict(sorted(
-        topic_files.items(),
-        key=lambda item: (int(item[0].rsplit(" ", 1)[1]),
-                          _month_sort_key(item[0].rsplit(" ", 1)[0]))
-    ))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -155,7 +166,7 @@ def get_quarter_label(month_num: int, year: int) -> str:
 
 
 def discover_quarterly_files(data_dir: str) -> dict:
-    """Group available monthly VRM/DRM files into financial quarters."""
+    """Group available monthly VRM/DRM/Topic files into financial quarters."""
     monthly = discover_monthly_files(data_dir)
     quarters = {}
 
@@ -177,6 +188,7 @@ def discover_quarterly_files(data_dir: str) -> dict:
             "year": year,
             "vrm": paths["vrm"],
             "drm": paths["drm"],
+            "topic": paths["topic"],
         })
 
     for quarter in quarters:
@@ -201,7 +213,7 @@ def get_half_yearly_label(month_num: int, year: int) -> str:
 
 
 def discover_half_yearly_files(data_dir: str) -> dict:
-    """Group available monthly VRM/DRM files into financial half-years."""
+    """Group available monthly VRM/DRM/Topic files into financial half-years."""
     monthly = discover_monthly_files(data_dir)
     half_years = {}
 
@@ -223,6 +235,7 @@ def discover_half_yearly_files(data_dir: str) -> dict:
             "year": year,
             "vrm": paths["vrm"],
             "drm": paths["drm"],
+            "topic": paths["topic"],
         })
 
     for hy in half_years:
@@ -235,7 +248,7 @@ def discover_half_yearly_files(data_dir: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MULTI-MONTH VRM AND DRM COMBINE LOADERS
+# MULTI-MONTH VRM, DRM & TOPIC COMBINE LOADERS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_selected_vrm_data(selected_entries: list) -> dict:
@@ -302,6 +315,73 @@ def load_selected_drm_data(selected_entries: list) -> dict:
         "ac": pd.concat(ac_dfs, ignore_index=True) if ac_dfs else pd.DataFrame(),
         "od": pd.concat(od_dfs, ignore_index=True) if od_dfs else pd.DataFrame(),
         "ne": pd.concat(ne_dfs, ignore_index=True) if ne_dfs else pd.DataFrame(),
+    }
+
+
+@st.cache_data(show_spinner=False)
+def load_topic_workbook(path: str) -> dict:
+    """Read Topic-SubTopic, Cancelled Sessions, and Offline Sessions from a Topic workbook."""
+    if not os.path.exists(path):
+        return {"topic": pd.DataFrame(), "cancelled": pd.DataFrame(), "offline": pd.DataFrame()}
+
+    def _norm(s: str) -> str:
+        return " ".join(str(s).strip().lower().replace("_", " ").replace("-", " ").split())
+
+    xl = pd.ExcelFile(path)
+    sheet_map = {_norm(s): s for s in xl.sheet_names}
+
+    def _read_matching_sheet(keywords: tuple[str, ...], fallback_first: bool = False) -> pd.DataFrame:
+        for norm_name, orig_name in sheet_map.items():
+            if any(k in norm_name for k in keywords):
+                df_s = pd.read_excel(xl, sheet_name=orig_name)
+                df_s.columns = df_s.columns.str.strip()
+                return df_s
+        if fallback_first and xl.sheet_names:
+            df_s = pd.read_excel(xl, sheet_name=xl.sheet_names[0])
+            df_s.columns = df_s.columns.str.strip()
+            return df_s
+        return pd.DataFrame()
+
+    return {
+        "topic":     _read_matching_sheet(("topic", "subtopic"), fallback_first=True),
+        "cancelled": _read_matching_sheet(("cancel",)),
+        "offline":   _read_matching_sheet(("offline",)),
+    }
+
+
+def load_selected_topic_data(selected_entries: list) -> dict:
+    """
+    Loads Topic workbooks for the selected reporting period entries (Monthly,
+    Quarterly, or Half-Yearly) and concatenates them across sheets.
+    """
+    topic_dfs, cancelled_dfs, offline_dfs = [], [], []
+    matched_months = []
+    missing_months = []
+
+    for entry in selected_entries:
+        topic_path = entry.get("topic")
+        if topic_path and os.path.exists(topic_path):
+            matched_months.append(entry["label"])
+            wb_data = load_topic_workbook(topic_path)
+            for key, container in [
+                ("topic", topic_dfs),
+                ("cancelled", cancelled_dfs),
+                ("offline", offline_dfs),
+            ]:
+                df_s = wb_data.get(key, pd.DataFrame())
+                if not df_s.empty:
+                    df_copy = df_s.copy()
+                    df_copy["Source Month"] = entry["label"]
+                    container.append(df_copy)
+        else:
+            missing_months.append(entry["label"])
+
+    return {
+        "topic":          pd.concat(topic_dfs, ignore_index=True) if topic_dfs else pd.DataFrame(),
+        "cancelled":      pd.concat(cancelled_dfs, ignore_index=True) if cancelled_dfs else pd.DataFrame(),
+        "offline":        pd.concat(offline_dfs, ignore_index=True) if offline_dfs else pd.DataFrame(),
+        "matched_months": matched_months,
+        "missing_months": missing_months,
     }
 
 
@@ -671,7 +751,6 @@ def _insight_box(text: str, color: str = "#ba7517", bg: str = "#faeeda") -> str:
 # MAIN RENDER
 # ─────────────────────────────────────────────────────────────────────────────
 def render_ops_dashboard():
-    # Ensure all 6 tabs fit cleanly on a single row without clipping off-screen
     st.markdown(
         """
         <style>
@@ -701,7 +780,7 @@ def render_ops_dashboard():
         st.markdown("---")
         st.error(
             "⚠️ No monthly data files found. Place files named like "
-            "`VRM_April_2026.xlsx` (and optionally `DRM_April_2026.xlsx`) "
+            "`VRM_April_2026.xlsx`, `DRM_April_2026.xlsx`, or `Topic_April_2026.xlsx` "
             f"in `{DATA_DIR}`."
         )
         return
@@ -738,8 +817,9 @@ def render_ops_dashboard():
         selected_entries = [
             {
                 "label": month,
-                "vrm": available_months[month]["vrm"],
-                "drm": available_months[month]["drm"],
+                "vrm":   available_months[month]["vrm"],
+                "drm":   available_months[month]["drm"],
+                "topic": available_months[month]["topic"],
             }
             for month in selected_months
         ]
@@ -763,11 +843,7 @@ def render_ops_dashboard():
         )
 
         quarter_entries = available_quarters[selected_quarter]
-
-        month_options = [
-            item["label"]
-            for item in quarter_entries
-        ]
+        month_options = [item["label"] for item in quarter_entries]
 
         selected_months = st.multiselect(
             "📅 Select Months",
@@ -787,10 +863,7 @@ def render_ops_dashboard():
             if item["label"] in selected_months
         ]
 
-        period_label = (
-            f"{selected_quarter} — "
-            + ", ".join(selected_months)
-        )
+        period_label = f"{selected_quarter} — " + ", ".join(selected_months)
 
     else:
         available_half_years = discover_half_yearly_files(DATA_DIR)
@@ -809,11 +882,7 @@ def render_ops_dashboard():
         )
 
         hy_entries = available_half_years[selected_hy]
-
-        month_options = [
-            item["label"]
-            for item in hy_entries
-        ]
+        month_options = [item["label"] for item in hy_entries]
 
         selected_months = st.multiselect(
             "📅 Select Months",
@@ -833,10 +902,7 @@ def render_ops_dashboard():
             if item["label"] in selected_months
         ]
 
-        period_label = (
-            f"{selected_hy} — "
-            + ", ".join(selected_months)
-        )
+        period_label = f"{selected_hy} — " + ", ".join(selected_months)
 
     st.markdown(
         "<p style='color:gray;font-size:1.05em;margin-top:-12px;'>"
@@ -847,29 +913,24 @@ def render_ops_dashboard():
     st.markdown("---")
 
     # ═════════════════════════════════════════════════════════════════════════
-    # LOAD VRM DATA
+    # LOAD VRM, DRM & TOPIC DATA FOR THE SELECTED REPORTING PERIOD
     # ═════════════════════════════════════════════════════════════════════════
 
     with st.spinner(f"Loading VRM data for {period_label}…"):
         data = load_selected_vrm_data(selected_entries)
 
-    if not data or data["active"].empty:
-        st.error(f"⚠️ Could not load VRM data for {period_label}.")
-        return
-
-    df_raw  = data["active"]
-    dropped = data["dropped"]
-    new_reg = data["new_reg"]
+    df_raw  = data.get("active", pd.DataFrame())
+    dropped = data.get("dropped", pd.DataFrame())
+    new_reg = data.get("new_reg", pd.DataFrame())
 
     if "active_tab" not in st.session_state:
         st.session_state.active_tab = "vrm"
 
-    # ═════════════════════════════════════════════════════════════════════════
-    # LOAD DRM DATA
-    # ═════════════════════════════════════════════════════════════════════════
-
     with st.spinner(f"Loading DRM data for {period_label}…"):
         drm_data_raw = load_selected_drm_data(selected_entries)
+
+    with st.spinner(f"Loading Topic & SubTopic data for {period_label}…"):
+        topic_data_raw = load_selected_topic_data(selected_entries)
 
     # ── Build sidebar — content switches based on active_tab flag ─────────────
     with st.sidebar:
@@ -894,52 +955,56 @@ def render_ops_dashboard():
                 unsafe_allow_html=True,
             )
 
-            _vrm_all_donors   = sorted(df_raw["Donor"].dropna().unique())
-            _vrm_all_states   = sorted(df_raw["State"].dropna().unique())
-            _vrm_all_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
+            if not df_raw.empty:
+                _vrm_all_donors   = sorted(df_raw["Donor"].dropna().unique())
+                _vrm_all_states   = sorted(df_raw["State"].dropna().unique())
+                _vrm_all_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
 
-            sel_donors = st.multiselect(
-                "Donor",
-                options=_vrm_all_donors,
-                default=_vrm_all_donors,
-                placeholder="Type to search donors…",
-                key="ops_donor",
-            )
+                sel_donors = st.multiselect(
+                    "Donor",
+                    options=_vrm_all_donors,
+                    default=_vrm_all_donors,
+                    placeholder="Type to search donors…",
+                    key="ops_donor",
+                )
 
-            if sel_donors:
-                _linked_states = sorted(
-                    df_raw[df_raw["Donor"].isin(sel_donors)]["State"].dropna().unique()
+                if sel_donors:
+                    _linked_states = sorted(
+                        df_raw[df_raw["Donor"].isin(sel_donors)]["State"].dropna().unique()
+                    )
+                else:
+                    _linked_states = _vrm_all_states
+
+                sel_states = st.multiselect(
+                    "State (Centre)",
+                    options=_linked_states,
+                    default=_linked_states,
+                    placeholder="Type to search states…",
+                    key="ops_state",
+                )
+
+                _vmask = pd.Series([True] * len(df_raw), index=df_raw.index)
+                if sel_donors:
+                    _vmask &= df_raw["Donor"].isin(sel_donors)
+                if sel_states:
+                    _vmask &= df_raw["State"].isin(sel_states)
+                _linked_subjects = sorted(df_raw[_vmask]["Subject_clean"].dropna().unique())
+
+                sel_subjects = st.multiselect(
+                    "Subject",
+                    options=_linked_subjects,
+                    default=_linked_subjects,
+                    placeholder="Type to search subjects…",
+                    key="ops_subject",
+                )
+
+                st.caption(
+                    "Filters cascade — selecting a donor narrows available states & subjects. "
+                    "Applies to Volunteers, Centres and Academic Health tabs."
                 )
             else:
-                _linked_states = _vrm_all_states
-
-            sel_states = st.multiselect(
-                "State (Centre)",
-                options=_linked_states,
-                default=_linked_states,
-                placeholder="Type to search states…",
-                key="ops_state",
-            )
-
-            _vmask = pd.Series([True] * len(df_raw), index=df_raw.index)
-            if sel_donors:
-                _vmask &= df_raw["Donor"].isin(sel_donors)
-            if sel_states:
-                _vmask &= df_raw["State"].isin(sel_states)
-            _linked_subjects = sorted(df_raw[_vmask]["Subject_clean"].dropna().unique())
-
-            sel_subjects = st.multiselect(
-                "Subject",
-                options=_linked_subjects,
-                default=_linked_subjects,
-                placeholder="Type to search subjects…",
-                key="ops_subject",
-            )
-
-            st.caption(
-                "Filters cascade — selecting a donor narrows available states & subjects. "
-                "Applies to Volunteers, Centres and Academic Health tabs."
-            )
+                st.warning("VRM file not found for selected period.")
+                sel_donors = sel_states = sel_subjects = []
 
             if drm_data_raw and "sess" in drm_data_raw and not drm_data_raw["sess"].empty:
                 sel_drm_donors   = sorted(drm_data_raw["sess"]["Donor"].dropna().unique())
@@ -1007,17 +1072,23 @@ def render_ops_dashboard():
                 st.warning("DRM file not found — filters unavailable.")
                 sel_drm_donors = sel_drm_states = sel_drm_subjects = []
 
-            sel_donors   = sorted(df_raw["Donor"].dropna().unique())
-            sel_states   = sorted(df_raw["State"].dropna().unique())
-            sel_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
+            if not df_raw.empty:
+                sel_donors   = sorted(df_raw["Donor"].dropna().unique())
+                sel_states   = sorted(df_raw["State"].dropna().unique())
+                sel_subjects = sorted(df_raw["Subject_clean"].dropna().unique())
+            else:
+                sel_donors = sel_states = sel_subjects = []
 
-    df = df_raw[
-        df_raw["Donor"].isin(sel_donors) &
-        df_raw["State"].isin(sel_states) &
-        df_raw["Subject_clean"].isin(sel_subjects)
-    ].copy()
-
-    vol_df = df.drop_duplicates(subset="Volunteer id").copy() if not df.empty else df.copy()
+    if not df_raw.empty:
+        df = df_raw[
+            df_raw["Donor"].isin(sel_donors) &
+            df_raw["State"].isin(sel_states) &
+            df_raw["Subject_clean"].isin(sel_subjects)
+        ].copy()
+        vol_df = df.drop_duplicates(subset="Volunteer id").copy() if not df.empty else df.copy()
+    else:
+        df = pd.DataFrame()
+        vol_df = pd.DataFrame()
 
     # ─────────────────────────────────────────────────────────────────────────
     # TABS
@@ -1035,7 +1106,9 @@ def render_ops_dashboard():
     # TAB 1 — VOLUNTEERS
     # ═════════════════════════════════════════════════════════════════════════
     with tab_vol:
-        if df.empty:
+        if df_raw.empty:
+            st.error(f"⚠️ No VRM workbook found for **{period_label}**.")
+        elif df.empty:
             st.info(
                 "🔍 No data available for the selected filters.\n\n"
                 "Try broadening your Donor, State, or Subject selection in the sidebar."
@@ -1279,7 +1352,9 @@ def render_ops_dashboard():
     # TAB 2 — CENTRES
     # ═════════════════════════════════════════════════════════════════════════
     with tab_ctr:
-        if df.empty:
+        if df_raw.empty:
+            st.error(f"⚠️ No VRM workbook found for **{period_label}**.")
+        elif df.empty:
             st.info(
                 "🔍 No data available for the selected filters.\n\n"
                 "Try broadening your Donor, State, or Subject selection in the sidebar."
@@ -1462,7 +1537,9 @@ def render_ops_dashboard():
     # TAB 3 — ACADEMIC HEALTH
     # ═════════════════════════════════════════════════════════════════════════
     with tab_aca:
-        if df.empty:
+        if df_raw.empty:
+            st.error(f"⚠️ No VRM workbook found for **{period_label}**.")
+        elif df.empty:
             st.info(
                 "🔍 No data available for the selected filters.\n\n"
                 "Try broadening your Donor, State, or Subject selection in the sidebar."
@@ -2172,230 +2249,212 @@ def render_ops_dashboard():
                 )
 
     # ═════════════════════════════════════════════════════════════════════════
-    # TAB 5 — TOPIC & SUBTOPIC ANALYTICS (MONTH MULTI-SELECT)
+    # TAB 5 — TOPIC & SUBTOPIC ANALYTICS (USES TOP REPORTING PERIOD)
     # ═════════════════════════════════════════════════════════════════════════
     with tab_top:
         st.markdown("### 📑 Topic & SubTopic Analytics Dashboard")
         st.caption(
-            "Select one or more months. The dashboard loads the matching "
-            "Topic_<Month>_<Year>.xlsx workbooks from the application folder."
+            f"Showing Topic & SubTopic coverage for **{period_label}** "
+            "(controlled by the Reporting Type & Period selector above)."
         )
 
-        topic_month_files = discover_topic_monthly_files(DATA_DIR)
+        topic_df     = topic_data_raw.get("topic", pd.DataFrame())
+        cancelled_df = topic_data_raw.get("cancelled", pd.DataFrame())
+        offline_df   = topic_data_raw.get("offline", pd.DataFrame())
+        missing_m    = topic_data_raw.get("missing_months", [])
 
-        if not topic_month_files:
-            st.warning(
-                f"No monthly Topic workbooks found in `{DATA_DIR}`. "
-                "Add files named like `Topic_April_2026.xlsx` and `Topic_May_2026.xlsx`."
+        if missing_m and not topic_df.empty:
+            st.info(
+                "ℹ️ Topic workbooks were not found for: " + ", ".join(missing_m)
             )
+
+        if topic_df.empty:
+            found_excel = discover_excel_files(DATA_DIR, exclude_vrm_drm=True)
+            st.error(
+                f"⚠️ No Topic & SubTopic workbook found for **{period_label}** in `{DATA_DIR}`.\n\n"
+                "Expected naming format: `Topic_July_2026.xlsx` (or `Topic_SubTopic_July_2026.xlsx`)."
+            )
+            if found_excel:
+                st.caption("Other Excel files currently detected in folder: " + ", ".join(f"`{f}`" for f in found_excel))
         else:
-            topic_month_labels = list(topic_month_files.keys())
-            selected_topic_months = st.multiselect(
-                "📅 Select Topic Reporting Months",
-                options=topic_month_labels,
-                default=[topic_month_labels[-1]],
-                key="topic_selected_months",
-                placeholder="Select one or more months",
+            def _find_topic_col(df_check, candidates):
+                lower_map = {c.lower().strip().replace(" ", "_"): c for c in df_check.columns}
+                for cand in candidates:
+                    key = cand.lower().strip().replace(" ", "_")
+                    if key in lower_map:
+                        return lower_map[key]
+                return None
+
+            state_col      = _find_topic_col(topic_df, ["state", "center_state"])
+            subject_col    = _find_topic_col(topic_df, ["subject", "subject_name"])
+            grade_col      = _find_topic_col(topic_df, ["grade", "class"])
+            topic_col      = _find_topic_col(topic_df, ["topic_name", "topic"])
+            subtopic_col   = _find_topic_col(topic_df, ["sub_topic_name", "subtopic_name", "sub_topic", "subtopic"])
+            center_id_col  = _find_topic_col(topic_df, ["center_id", "centre_id"])
+            center_nm_col  = _find_topic_col(topic_df, ["center_name", "centre_name", "center"])
+
+            # ── IN-TAB FILTERS ──────────────────────────────────────────────
+            with st.expander("📊 Topic Filters", expanded=True):
+                fc1, fc2, fc3 = st.columns(3)
+
+                with fc1:
+                    st_opts = sorted(topic_df[state_col].dropna().astype(str).unique()) if state_col else []
+                    t_state_filter = st.multiselect("State", st_opts, key="tab5_state")
+
+                state_df = (
+                    topic_df[topic_df[state_col].astype(str).isin(t_state_filter)]
+                    if t_state_filter and state_col else topic_df.copy()
+                )
+
+                with fc2:
+                    sub_opts = sorted(state_df[subject_col].dropna().astype(str).unique()) if subject_col else []
+                    t_subject_filter = st.multiselect("Subject", sub_opts, key="tab5_subject")
+
+                subject_df = (
+                    state_df[state_df[subject_col].astype(str).isin(t_subject_filter)]
+                    if t_subject_filter and subject_col else state_df.copy()
+                )
+
+                with fc3:
+                    grd_opts = sorted(subject_df[grade_col].dropna().astype(str).unique()) if grade_col else []
+                    t_grade_filter = st.multiselect("Grade", grd_opts, key="tab5_grade")
+
+                filtered_topic_df = (
+                    subject_df[subject_df[grade_col].astype(str).isin(t_grade_filter)]
+                    if t_grade_filter and grade_col else subject_df.copy()
+                )
+
+            # ── KPI METRICS ─────────────────────────────────────────────────
+            total_sessions   = len(filtered_topic_df)
+            unique_topics    = filtered_topic_df[topic_col].nunique() if topic_col else 0
+            unique_subtopics = filtered_topic_df[subtopic_col].nunique() if subtopic_col else 0
+            unique_centers   = (
+                filtered_topic_df[center_id_col].nunique() if center_id_col
+                else filtered_topic_df[center_nm_col].nunique() if center_nm_col
+                else 0
             )
 
-            if not selected_topic_months:
-                st.info("Select at least one month to load Topic & SubTopic analytics.")
-            else:
-                selected_topic_paths = {
-                    month: topic_month_files[month]
-                    for month in selected_topic_months
-                }
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Sessions", f"{total_sessions:,}")
+            col2.metric("Unique Topics", f"{unique_topics:,}")
+            col3.metric("Unique Subtopics", f"{unique_subtopics:,}")
+            col4.metric("Active Centers", f"{unique_centers:,}")
 
-                @st.cache_data(show_spinner=False)
-                def load_topic_monthly_data(month_path_items):
-                    """Load and combine Topic, Cancelled, and Offline sheets by month."""
-                    topic_frames, cancelled_frames, offline_frames = [], [], []
-                    errors = []
+            st.markdown("---")
+            top_tab1, top_tab2, top_tab3 = st.tabs([
+                "📋 Topic Analysis", "❌ Cancelled Sessions", "⏸️ Offline Sessions"
+            ])
 
-                    def _normalise_sheet(value):
-                        return " ".join(str(value).strip().lower().split())
-
-                    for month_label, file_path in month_path_items:
-                        try:
-                            xl = pd.ExcelFile(file_path)
-                            sheet_map = {_normalise_sheet(s): s for s in xl.sheet_names}
-
-                            sheet_targets = {
-                                "topic": "topic-subtopic",
-                                "cancelled": "cancelled sessions",
-                                "offline": "offline sessions",
-                            }
-
-                            for key, target in sheet_targets.items():
-                                actual_sheet = sheet_map.get(target)
-                                if actual_sheet is None:
-                                    continue
-                                frame = pd.read_excel(xl, sheet_name=actual_sheet)
-                                if frame.empty:
-                                    continue
-                                frame["Source Month"] = month_label
-                                if key == "topic":
-                                    topic_frames.append(frame)
-                                elif key == "cancelled":
-                                    cancelled_frames.append(frame)
-                                else:
-                                    offline_frames.append(frame)
-                        except Exception as exc:
-                            errors.append(f"{month_label}: {exc}")
-
-                    topic_all = pd.concat(topic_frames, ignore_index=True) if topic_frames else pd.DataFrame()
-                    cancelled_all = pd.concat(cancelled_frames, ignore_index=True) if cancelled_frames else pd.DataFrame()
-                    offline_all = pd.concat(offline_frames, ignore_index=True) if offline_frames else pd.DataFrame()
-                    return topic_all, cancelled_all, offline_all, errors
-
-                topic_month_path_items = tuple(
-                    (month, selected_topic_paths[month]) for month in selected_topic_months
-                )
-                with st.spinner("Loading Topic & SubTopic data for selected months..."):
-                    topic_df, cancelled_df, offline_df, topic_load_errors = load_topic_monthly_data(
-                        topic_month_path_items
+            with top_tab1:
+                if topic_col:
+                    st.subheader("Top Topics")
+                    topic_summary = (
+                        filtered_topic_df.groupby(topic_col).size()
+                        .reset_index(name="Sessions")
+                        .sort_values("Sessions", ascending=False).head(20)
                     )
-
-                if topic_load_errors:
-                    st.warning("Some monthly workbooks could not be read: " + " | ".join(topic_load_errors))
-
-                st.caption("Selected months: " + ", ".join(selected_topic_months))
-
-                if topic_df.empty:
-                    st.error(
-                        "No data found in the `Topic-SubTopic` sheet for the selected months. "
-                        "Check that each workbook contains a non-empty `Topic-SubTopic` sheet."
+                    fig = px.bar(
+                        topic_summary, x="Sessions", y=topic_col,
+                        orientation="h", title="Top 20 Topics"
                     )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                if subtopic_col:
+                    st.subheader("Top Sub Topics")
+                    subtopic_summary = (
+                        filtered_topic_df.groupby(subtopic_col).size()
+                        .reset_index(name="Sessions")
+                        .sort_values("Sessions", ascending=False).head(20)
+                    )
+                    fig2 = px.bar(
+                        subtopic_summary, x="Sessions", y=subtopic_col,
+                        orientation="h", title="Top 20 Sub Topics"
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+
+                if subject_col:
+                    st.subheader("Subject Distribution")
+                    subject_chart = filtered_topic_df.groupby(subject_col).size().reset_index(name="Count")
+                    fig3 = px.pie(subject_chart, names=subject_col, values="Count")
+                    st.plotly_chart(fig3, use_container_width=True)
+
+                if "Source Month" in filtered_topic_df.columns and filtered_topic_df["Source Month"].nunique() > 1:
+                    st.subheader("Sessions by Reporting Month")
+                    month_summary = filtered_topic_df.groupby("Source Month").size().reset_index(name="Sessions")
+                    fig_month = px.bar(month_summary, x="Source Month", y="Sessions", title="Topic Sessions by Month")
+                    st.plotly_chart(fig_month, use_container_width=True)
+
+            with top_tab2:
+                st.subheader("Cancelled Session Analysis")
+                if not cancelled_df.empty:
+                    st.metric("Total Cancelled Sessions", f"{len(cancelled_df):,}")
+                    cancel_reason_col = _find_topic_col(cancelled_df, ["cancel_reason", "reason"])
+                    if cancel_reason_col:
+                        cancel_chart = (
+                            cancelled_df.groupby(cancel_reason_col).size()
+                            .reset_index(name="Count")
+                            .sort_values("Count", ascending=False).head(15)
+                        )
+                        fig4 = px.bar(
+                            cancel_chart, x="Count", y=cancel_reason_col,
+                            orientation="h", title="Cancellation Reasons"
+                        )
+                        st.plotly_chart(fig4, use_container_width=True)
+                    canc_state_col = _find_topic_col(cancelled_df, ["state", "center_state"])
+                    if canc_state_col:
+                        state_cancel = (
+                            cancelled_df.groupby(canc_state_col).size()
+                            .reset_index(name="Count")
+                            .sort_values("Count", ascending=False)
+                        )
+                        fig5 = px.bar(
+                            state_cancel, x=canc_state_col, y="Count",
+                            title="Cancelled Sessions by State"
+                        )
+                        st.plotly_chart(fig5, use_container_width=True)
                 else:
-                    # ── IN-TAB FILTERS ──────────────────────────────────────
-                    with st.expander("📊 Topic Filters", expanded=True):
-                        fc1, fc2, fc3 = st.columns(3)
+                    st.info("No cancelled sessions data found in the selected workbook(s).")
 
-                        state_col = "state" if "state" in topic_df.columns else "State"
-                        subject_col = "subject" if "subject" in topic_df.columns else "Subject"
-                        grade_col = "grade" if "grade" in topic_df.columns else "Grade"
+            with top_tab3:
+                st.subheader("Offline Session Analysis")
+                if not offline_df.empty:
+                    st.metric("Total Offline Sessions", f"{len(offline_df):,}")
+                    offline_reason_col = _find_topic_col(offline_df, ["offline_reason", "reason"])
+                    if offline_reason_col:
+                        offline_reason = (
+                            offline_df.groupby(offline_reason_col).size()
+                            .reset_index(name="Count")
+                            .sort_values("Count", ascending=False)
+                        )
+                        fig6 = px.bar(
+                            offline_reason, x="Count", y=offline_reason_col,
+                            orientation="h", title="Offline Reasons"
+                        )
+                        st.plotly_chart(fig6, use_container_width=True)
+                    off_state_col = _find_topic_col(offline_df, ["state", "center_state"])
+                    if off_state_col:
+                        state_offline = (
+                            offline_df.groupby(off_state_col).size()
+                            .reset_index(name="Count")
+                            .sort_values("Count", ascending=False)
+                        )
+                        fig7 = px.bar(
+                            state_offline, x=off_state_col, y="Count",
+                            title="Offline Sessions by State"
+                        )
+                        st.plotly_chart(fig7, use_container_width=True)
+                else:
+                    st.info("No offline sessions data found in the selected workbook(s).")
 
-                        with fc1:
-                            st_opts = sorted(topic_df[state_col].dropna().astype(str).unique()) if state_col in topic_df.columns else []
-                            t_state_filter = st.multiselect("State", st_opts, key="tab5_state")
-
-                        state_df = topic_df[
-                            topic_df[state_col].astype(str).isin(t_state_filter)
-                        ] if t_state_filter and state_col in topic_df.columns else topic_df.copy()
-
-                        with fc2:
-                            sub_opts = sorted(state_df[subject_col].dropna().astype(str).unique()) if subject_col in state_df.columns else []
-                            t_subject_filter = st.multiselect("Subject", sub_opts, key="tab5_subject")
-
-                        subject_df = state_df[
-                            state_df[subject_col].astype(str).isin(t_subject_filter)
-                        ] if t_subject_filter and subject_col in state_df.columns else state_df.copy()
-
-                        with fc3:
-                            grd_opts = sorted(subject_df[grade_col].dropna().astype(str).unique()) if grade_col in subject_df.columns else []
-                            t_grade_filter = st.multiselect("Grade", grd_opts, key="tab5_grade")
-
-                        filtered_topic_df = subject_df[
-                            subject_df[grade_col].astype(str).isin(t_grade_filter)
-                        ] if t_grade_filter and grade_col in subject_df.columns else subject_df.copy()
-
-                    # ── KPI METRICS ─────────────────────────────────────────
-                    total_sessions = len(filtered_topic_df)
-                    unique_topics = filtered_topic_df["topic_name"].nunique() if "topic_name" in filtered_topic_df.columns else 0
-                    unique_subtopics = filtered_topic_df["sub_topic_name"].nunique() if "sub_topic_name" in filtered_topic_df.columns else 0
-                    unique_centers = (
-                        filtered_topic_df["center_id"].nunique() if "center_id" in filtered_topic_df.columns
-                        else filtered_topic_df["center_name"].nunique() if "center_name" in filtered_topic_df.columns
-                        else 0
-                    )
-
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Total Sessions", f"{total_sessions:,}")
-                    col2.metric("Unique Topics", f"{unique_topics:,}")
-                    col3.metric("Unique Subtopics", f"{unique_subtopics:,}")
-                    col4.metric("Active Centers", f"{unique_centers:,}")
-
-                    st.markdown("---")
-                    top_tab1, top_tab2, top_tab3 = st.tabs([
-                        "📋 Topic Analysis", "❌ Cancelled Sessions", "⏸️ Offline Sessions"
-                    ])
-
-                    with top_tab1:
-                        if "topic_name" in filtered_topic_df.columns:
-                            st.subheader("Top Topics")
-                            topic_summary = (
-                                filtered_topic_df.groupby("topic_name").size()
-                                .reset_index(name="Sessions")
-                                .sort_values("Sessions", ascending=False).head(20)
-                            )
-                            fig = px.bar(topic_summary, x="Sessions", y="topic_name", orientation="h", title="Top 20 Topics")
-                            st.plotly_chart(fig, use_container_width=True)
-
-                        if "sub_topic_name" in filtered_topic_df.columns:
-                            st.subheader("Top Sub Topics")
-                            subtopic_summary = (
-                                filtered_topic_df.groupby("sub_topic_name").size()
-                                .reset_index(name="Sessions")
-                                .sort_values("Sessions", ascending=False).head(20)
-                            )
-                            fig2 = px.bar(subtopic_summary, x="Sessions", y="sub_topic_name", orientation="h", title="Top 20 Sub Topics")
-                            st.plotly_chart(fig2, use_container_width=True)
-
-                        if subject_col in filtered_topic_df.columns:
-                            st.subheader("Subject Distribution")
-                            subject_chart = filtered_topic_df.groupby(subject_col).size().reset_index(name="Count")
-                            fig3 = px.pie(subject_chart, names=subject_col, values="Count")
-                            st.plotly_chart(fig3, use_container_width=True)
-
-                        if "Source Month" in filtered_topic_df.columns:
-                            st.subheader("Sessions by Selected Month")
-                            month_summary = filtered_topic_df.groupby("Source Month").size().reset_index(name="Sessions")
-                            fig_month = px.bar(month_summary, x="Source Month", y="Sessions", title="Topic Sessions by Month")
-                            st.plotly_chart(fig_month, use_container_width=True)
-
-                    with top_tab2:
-                        st.subheader("Cancelled Session Analysis")
-                        if not cancelled_df.empty:
-                            st.metric("Total Cancelled Sessions", f"{len(cancelled_df):,}")
-                            cancel_reason_col = next((c for c in ("cancel_reason", "Cancel_reason") if c in cancelled_df.columns), None)
-                            if cancel_reason_col:
-                                cancel_chart = cancelled_df.groupby(cancel_reason_col).size().reset_index(name="Count").sort_values("Count", ascending=False).head(15)
-                                fig4 = px.bar(cancel_chart, x="Count", y=cancel_reason_col, orientation="h", title="Cancellation Reasons")
-                                st.plotly_chart(fig4, use_container_width=True)
-                            canc_state_col = next((c for c in ("State", "state") if c in cancelled_df.columns), None)
-                            if canc_state_col:
-                                state_cancel = cancelled_df.groupby(canc_state_col).size().reset_index(name="Count").sort_values("Count", ascending=False)
-                                fig5 = px.bar(state_cancel, x=canc_state_col, y="Count", title="Cancelled Sessions by State")
-                                st.plotly_chart(fig5, use_container_width=True)
-                        else:
-                            st.info("No cancelled sessions data found in the selected monthly workbooks.")
-
-                    with top_tab3:
-                        st.subheader("Offline Session Analysis")
-                        if not offline_df.empty:
-                            st.metric("Total Offline Sessions", f"{len(offline_df):,}")
-                            offline_reason_col = next((c for c in ("Offline reason", "offline_reason") if c in offline_df.columns), None)
-                            if offline_reason_col:
-                                offline_reason = offline_df.groupby(offline_reason_col).size().reset_index(name="Count").sort_values("Count", ascending=False)
-                                fig6 = px.bar(offline_reason, x="Count", y=offline_reason_col, orientation="h", title="Offline Reasons")
-                                st.plotly_chart(fig6, use_container_width=True)
-                            off_state_col = next((c for c in ("State", "state") if c in offline_df.columns), None)
-                            if off_state_col:
-                                state_offline = offline_df.groupby(off_state_col).size().reset_index(name="Count").sort_values("Count", ascending=False)
-                                fig7 = px.bar(state_offline, x=off_state_col, y="Count", title="Offline Sessions by State")
-                                st.plotly_chart(fig7, use_container_width=True)
-                        else:
-                            st.info("No offline sessions data found in the selected monthly workbooks.")
-
-                    st.markdown("---")
-                    month_slug = "_".join(re.sub(r"[^A-Za-z0-9]+", "_", m).strip("_") for m in selected_topic_months)
-                    st.download_button(
-                        "📥 Download Filtered Topic Data",
-                        filtered_topic_df.to_csv(index=False),
-                        file_name=f"filtered_topic_data_{month_slug}.csv",
-                        mime="text/csv",
-                        key="download_topic_csv",
-                    )
+            st.markdown("---")
+            period_slug = re.sub(r"[^A-Za-z0-9]+", "_", period_label).strip("_")
+            st.download_button(
+                "📥 Download Filtered Topic Data",
+                filtered_topic_df.to_csv(index=False),
+                file_name=f"filtered_topic_data_{period_slug}.csv",
+                mime="text/csv",
+                key="download_topic_csv",
+            )
 
     # ═════════════════════════════════════════════════════════════════════════
     # TAB 6 — BASELINE ONLY METRICS
@@ -2440,7 +2499,6 @@ def render_ops_dashboard():
                             return lower_map[cand.lower()]
                     return None
 
-                # ── BASELINE SCORE COLUMN DETECTION ──────────────────────────────
                 col_score = _pick_col(bl_raw, [
                     "Baseline%", "Baseline %", "BL%", "BL %",
                     "Baseline Score", "Score%", "Score %",
