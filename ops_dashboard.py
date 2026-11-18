@@ -3,8 +3,7 @@
 ops_dashboard.py
 ================
 Operations & Impact Command Center  —  eVidyaloka VRM
-Data source: auto-detected monthly workbooks named VRM_<Month>_<Year>.xlsx,
-DRM_<Month>_<Year>.xlsx, and Topic_<Month>_<Year>.xlsx (e.g. VRM_April_2026.xlsx),
+Data source: auto-detected monthly workbooks for VRM, DRM, and Topic & SubTopic,
 selected via Monthly, Quarterly, or Half-Yearly reporting modes.
 
 Sheets used (VRM)
@@ -43,11 +42,16 @@ from datetime import datetime
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Matches VRM_April_2026.xlsx, DRM_May_2026.xlsx, VRM__May__2026.xlsx, etc.
-MONTH_FILE_RE = re.compile(r"^(VRM|DRM)_+([A-Za-z]+)_+(\d{4})\.xlsx$", re.IGNORECASE)
+MONTH_FILE_RE = re.compile(r"^(VRM|DRM)_+([A-Za-z]+)_+(\d{4})\s*\.xlsx$", re.IGNORECASE)
 
-# Matches Topic_July_2026.xlsx, Topic_SubTopic_July_2026.xlsx, Topics_Jul_2026.xlsx, etc.
+# Matches all Topic workbook naming variations in the repository, e.g.:
+#   Topic_July_2026 .xlsx
+#   Topic_SubTopic_Cancelled_Offline_August_2026.xlsx
+#   Topic-SubTopic-Cancelled-Offline-June2026.xlsx
+#   Topic-Subtopic-CancelledRemarks-Apr26.xlsx
 TOPIC_FILE_RE = re.compile(
-    r"^Topics?(?:[_\-\s]+SubTopics?)?[_\-\s]+([A-Za-z]+)[_\-\s]+(\d{4})\.xlsx$",
+    r"^Topics?.*?(January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[_\-\s]*(\d{2}|\d{4})\s*\.xlsx$",
     re.IGNORECASE,
 )
 
@@ -57,8 +61,10 @@ SHEET_NEW_REG = "Newly Registered VT "   # trailing space is in the file
 
 
 def _canonical_month_name(month_name: str) -> str:
-    """Normalize 'Jul' or 'JULY' to full month title ('July') when possible."""
+    """Normalize 'Jul', 'Sept', or 'JULY' to full month title ('July', 'September')."""
     cleaned = month_name.strip()
+    if cleaned.lower() == "sept":
+        return "September"
     for fmt in ("%B", "%b"):
         try:
             return datetime.strptime(cleaned, fmt).strftime("%B")
@@ -67,12 +73,23 @@ def _canonical_month_name(month_name: str) -> str:
     return cleaned.title()
 
 
+def _canonical_year(year_str: str) -> str:
+    """Normalize 2-digit years ('26') to 4-digit years ('2026')."""
+    y = year_str.strip()
+    if len(y) == 2 and y.isdigit():
+        return f"20{y}"
+    return y
+
+
 def _month_sort_key(month_name: str) -> int:
     """Map a month name ('April', 'Apr', ...) to its calendar number (1-12)
     for chronological sorting. Unrecognised names sort first (0)."""
+    cleaned = month_name.strip()
+    if cleaned.lower() == "sept":
+        return 9
     for fmt in ("%B", "%b"):
         try:
-            return datetime.strptime(month_name.strip(), fmt).month
+            return datetime.strptime(cleaned, fmt).month
         except ValueError:
             continue
     return 0
@@ -97,7 +114,7 @@ def discover_monthly_files(data_dir: str) -> dict:
         if match:
             kind = match.group(1).upper()
             month_name = _canonical_month_name(match.group(2))
-            year = match.group(3)
+            year = _canonical_year(match.group(3))
             label = f"{month_name} {year}"
             entry = months.setdefault(label, {"vrm": None, "drm": None, "topic": None})
             entry["vrm" if kind == "VRM" else "drm"] = os.path.join(data_dir, fname)
@@ -106,12 +123,11 @@ def discover_monthly_files(data_dir: str) -> dict:
         t_match = TOPIC_FILE_RE.match(fname)
         if t_match:
             month_name = _canonical_month_name(t_match.group(1))
-            year = t_match.group(2)
+            year = _canonical_year(t_match.group(2))
             label = f"{month_name} {year}"
             entry = months.setdefault(label, {"vrm": None, "drm": None, "topic": None})
             entry["topic"] = os.path.join(data_dir, fname)
 
-    # Keep months that have at least one primary dataset (VRM, DRM, or Topic)
     months = {
         label: paths
         for label, paths in months.items()
@@ -2271,8 +2287,7 @@ def render_ops_dashboard():
         if topic_df.empty:
             found_excel = discover_excel_files(DATA_DIR, exclude_vrm_drm=True)
             st.error(
-                f"⚠️ No Topic & SubTopic workbook found for **{period_label}** in `{DATA_DIR}`.\n\n"
-                "Expected naming format: `Topic_July_2026.xlsx` (or `Topic_SubTopic_July_2026.xlsx`)."
+                f"⚠️ No Topic & SubTopic workbook found for **{period_label}** in `{DATA_DIR}`."
             )
             if found_excel:
                 st.caption("Other Excel files currently detected in folder: " + ", ".join(f"`{f}`" for f in found_excel))
