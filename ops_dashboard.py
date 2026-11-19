@@ -2512,10 +2512,13 @@ def render_ops_dashboard():
     # ═════════════════════════════════════════════════════════════════════════
     # TAB 6 — BASELINE ONLY METRICS (MANUAL MONTH & WORKBOOK SELECTOR)
     # ═════════════════════════════════════════════════════════════════════════
+   # ═════════════════════════════════════════════════════════════════════════
+    # TAB 6 — BASELINE ONLY METRICS (MANUAL MONTH, WORKBOOK & STATE SELECTOR)
+    # ═════════════════════════════════════════════════════════════════════════
     with tab_bl:
         st.markdown("### 🎯 Baseline-Only Impact Metrics")
         st.caption(
-            "Select Baseline workbook(s) and reporting month(s) from the application folder. "
+            "Select Baseline workbook(s), reporting month(s), and state(s) from the application folder. "
             "Does not combine Baseline scores with Endline results or other dashboard metrics."
         )
 
@@ -2582,7 +2585,6 @@ def render_ops_dashboard():
                         parsed_dates = pd.to_datetime(bl_raw[col_date], errors="coerce", dayfirst=True)
                         bl_raw["_bl_month"] = parsed_dates.dt.strftime("%B %Y").fillna("Unknown")
                     else:
-                        # Fallback: extract month label from filename if present (e.g., BL_July_2026.xlsx)
                         def _month_from_fname(fn: str) -> str:
                             m = re.search(
                                 r"(January|February|March|April|May|June|July|August|September|October|November|December|"
@@ -2604,18 +2606,55 @@ def render_ops_dashboard():
 
                     available_bl_months = sorted(bl_raw["_bl_month"].dropna().unique(), key=_bl_month_sort)
 
-                    selected_bl_months = st.multiselect(
-                        "📅 Select Baseline Month(s)",
-                        options=available_bl_months,
-                        default=available_bl_months,
-                        key="bl_manual_months",
-                        placeholder="Select one or more months…",
+                    # ── Detect State Column & Build Month + State Filter Row ──
+                    col_state = _pick_col(bl_raw, ["State", "Center State", "Centre State"])
+                    if col_state:
+                        bl_raw[col_state] = (
+                            bl_raw[col_state].astype(str)
+                            .str.replace("\u00ac\u00a0", " ", regex=False)
+                            .str.replace("\u00a0", " ", regex=False)
+                            .str.replace(r"\s+", " ", regex=True)
+                            .str.strip()
+                            .replace({"nan": "Unknown", "": "Unknown"})
+                        )
+
+                    flt_col1, flt_col2 = st.columns(2)
+
+                    with flt_col1:
+                        selected_bl_months = st.multiselect(
+                            "📅 Select Baseline Month(s)",
+                            options=available_bl_months,
+                            default=available_bl_months,
+                            key="bl_manual_months",
+                            placeholder="Select one or more months…",
+                        )
+
+                    bl_month_filtered = (
+                        bl_raw[bl_raw["_bl_month"].isin(selected_bl_months)].copy()
+                        if selected_bl_months else pd.DataFrame()
                     )
+
+                    with flt_col2:
+                        if col_state and not bl_month_filtered.empty:
+                            available_bl_states = sorted(bl_month_filtered[col_state].dropna().unique())
+                            selected_bl_states = st.multiselect(
+                                "🗺️ Select State(s)",
+                                options=available_bl_states,
+                                default=available_bl_states,
+                                key="bl_manual_states",
+                                placeholder="Select one or more states…",
+                            )
+                        else:
+                            selected_bl_states = []
 
                     if not selected_bl_months:
                         st.warning("⚠️ Please select at least one month to display Baseline metrics.")
+                    elif col_state and not selected_bl_states:
+                        st.warning("⚠️ Please select at least one state to display Baseline metrics.")
                     else:
-                        bl_raw = bl_raw[bl_raw["_bl_month"].isin(selected_bl_months)].copy()
+                        bl_raw = bl_month_filtered
+                        if col_state:
+                            bl_raw = bl_raw[bl_raw[col_state].isin(selected_bl_states)].copy()
 
                         col_score = _pick_col(bl_raw, [
                             "Baseline%", "Baseline %", "BL%", "BL %",
@@ -2662,13 +2701,12 @@ def render_ops_dashboard():
                         bl_raw = bl_raw.dropna(subset=[col_score])
 
                         if bl_raw.empty:
-                            st.error("⚠️ No valid numeric Baseline scores found for the selected month(s).")
+                            st.error("⚠️ No valid numeric Baseline scores found for the selected filters.")
                         else:
                             col_student = _pick_col(bl_raw, ["Student ID", "Student Name", "Child ID", "Learner ID", "Name"])
                             col_center  = _pick_col(bl_raw, ["Center Name", "Centre Name", "Center", "Centre", "School"])
                             col_subject = _pick_col(bl_raw, ["Subject", "Subject Name"])
                             col_grade   = _pick_col(bl_raw, ["Grade", "Class", "Std", "Standard"])
-                            col_state   = _pick_col(bl_raw, ["State", "Center State", "Centre State"])
                             col_gender  = _pick_col(bl_raw, ["Gender", "Sex"])
 
                             bl_df = bl_raw.copy()
@@ -2838,9 +2876,14 @@ def render_ops_dashboard():
                             if col_center:
                                 st.markdown("---")
                                 st.markdown("##### 🏫 Centre Baseline Leaderboard (Lowest to Highest — Priority Support)")
-                                ctr_grp_cols = [col_center] + ([col_state] if col_state else [])
+                                ctr_grp_cols = (
+                                    [col_center]
+                                    + ([col_state] if col_state else [])
+                                    + ([col_grade] if col_grade else [])
+                                    + ([col_subject] if col_subject else [])
+                                )
                                 ctr_bl = (
-                                    bl_df.groupby(ctr_grp_cols).agg(
+                                    bl_df.groupby(ctr_grp_cols, dropna=False).agg(
                                         Assessments=("_score", "count"),
                                         Avg_BL_Pct=("_score", "mean"),
                                         Needs_Support_Pct=("_score", lambda s: (s < 40).mean() * 100),
@@ -2865,7 +2908,3 @@ def render_ops_dashboard():
                                         ),
                                     },
                                 )
-
-
-# Alias so `from ops_dashboard import show_dashboard` in app.py works seamlessly
-show_dashboard = render_ops_dashboard
