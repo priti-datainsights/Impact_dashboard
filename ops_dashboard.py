@@ -2510,17 +2510,23 @@ def render_ops_dashboard():
             )
 
     # ═════════════════════════════════════════════════════════════════════════
-    # TAB 6 — BASELINE ONLY METRICS (MANUAL MONTH & WORKBOOK SELECTOR)
-    # ═════════════════════════════════════════════════════════════════════════
    # ═════════════════════════════════════════════════════════════════════════
-    # TAB 6 — BASELINE ONLY METRICS (MANUAL MONTH, WORKBOOK & STATE SELECTOR)
+    # TAB 6 — BASELINE ONLY METRICS (R.I.S.E. EDITION)
     # ═════════════════════════════════════════════════════════════════════════
     with tab_bl:
         st.markdown("### 🎯 Baseline-Only Impact Metrics")
         st.caption(
-            "Select Baseline workbook(s), reporting month(s), and state(s) from the application folder. "
-            "Does not combine Baseline scores with Endline results or other dashboard metrics."
+            "Select Baseline workbook(s) and state(s) from the application folder. "
+            "Evaluates Baseline performance using the R.I.S.E. framework (Reviving, Initiating, Shaping, Evolving)."
         )
+
+        RISE_COLORS = {
+            "Reviving":   "#f27c48",
+            "Initiating": "#0094c9",
+            "Shaping":    "#00964d",
+            "Evolving":   "#ed1c2d",
+        }
+        RISE_ORDER = ["Reviving", "Initiating", "Shaping", "Evolving"]
 
         bl_files_map = discover_baseline_files(DATA_DIR)
 
@@ -2543,13 +2549,16 @@ def render_ops_dashboard():
                 or [bl_file_names[0]]
             )
 
-            selected_bl_files = st.multiselect(
-                "📂 Select Baseline Workbook(s)",
-                options=bl_file_names,
-                default=default_bl_files,
-                key="bl_selected_files",
-                placeholder="Select one or more Baseline files…",
-            )
+            flt_col1, flt_col2 = st.columns(2)
+
+            with flt_col1:
+                selected_bl_files = st.multiselect(
+                    "📂 Select Baseline Workbook(s)",
+                    options=bl_file_names,
+                    default=default_bl_files,
+                    key="bl_selected_files",
+                    placeholder="Select one or more Baseline files…",
+                )
 
             if not selected_bl_files:
                 st.info("👆 Select at least one Baseline workbook above to view metrics.")
@@ -2567,46 +2576,7 @@ def render_ops_dashboard():
                 if bl_raw.empty:
                     st.error("⚠️ The selected Baseline workbook(s) are empty.")
                 else:
-                    # ── Derive Month Column for Manual Month Selector ─────────
-                    col_month = _pick_col(bl_raw, [
-                        "Month", "Reporting Month", "Assessment Month", "BL Month", "Month Year"
-                    ])
-                    col_date = _pick_col(bl_raw, [
-                        "Assessment Date", "Baseline Date", "BL Date", "Date",
-                        "Test Date", "Exam Date", "Created Date", "Submitted Date",
-                        "Session Date", "Start Date"
-                    ])
-
-                    if col_month is not None:
-                        bl_raw["_bl_month"] = (
-                            bl_raw[col_month].astype(str).str.strip().replace({"nan": "Unknown", "": "Unknown"})
-                        )
-                    elif col_date is not None:
-                        parsed_dates = pd.to_datetime(bl_raw[col_date], errors="coerce", dayfirst=True)
-                        bl_raw["_bl_month"] = parsed_dates.dt.strftime("%B %Y").fillna("Unknown")
-                    else:
-                        def _month_from_fname(fn: str) -> str:
-                            m = re.search(
-                                r"(January|February|March|April|May|June|July|August|September|October|November|December|"
-                                r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[_\-\s]*(\d{2}|\d{4})",
-                                fn,
-                                re.IGNORECASE,
-                            )
-                            if m:
-                                return f"{_canonical_month_name(m.group(1))} {_canonical_year(m.group(2))}"
-                            return fn.rsplit(".", 1)[0]
-
-                        bl_raw["_bl_month"] = bl_raw["_source_file"].apply(_month_from_fname)
-
-                    def _bl_month_sort(label: str):
-                        parts = label.rsplit(" ", 1)
-                        if len(parts) == 2 and parts[1].isdigit():
-                            return (int(parts[1]), _month_sort_key(parts[0]), label)
-                        return (9999, 99, label)
-
-                    available_bl_months = sorted(bl_raw["_bl_month"].dropna().unique(), key=_bl_month_sort)
-
-                    # ── Detect State Column & Build Month + State Filter Row ──
+                    # ── Detect & Filter by State ─────────────────────────────
                     col_state = _pick_col(bl_raw, ["State", "Center State", "Centre State"])
                     if col_state:
                         bl_raw[col_state] = (
@@ -2618,25 +2588,9 @@ def render_ops_dashboard():
                             .replace({"nan": "Unknown", "": "Unknown"})
                         )
 
-                    flt_col1, flt_col2 = st.columns(2)
-
-                    with flt_col1:
-                        selected_bl_months = st.multiselect(
-                            "📅 Select Baseline Month(s)",
-                            options=available_bl_months,
-                            default=available_bl_months,
-                            key="bl_manual_months",
-                            placeholder="Select one or more months…",
-                        )
-
-                    bl_month_filtered = (
-                        bl_raw[bl_raw["_bl_month"].isin(selected_bl_months)].copy()
-                        if selected_bl_months else pd.DataFrame()
-                    )
-
                     with flt_col2:
-                        if col_state and not bl_month_filtered.empty:
-                            available_bl_states = sorted(bl_month_filtered[col_state].dropna().unique())
+                        if col_state:
+                            available_bl_states = sorted(bl_raw[col_state].dropna().unique())
                             selected_bl_states = st.multiselect(
                                 "🗺️ Select State(s)",
                                 options=available_bl_states,
@@ -2647,26 +2601,22 @@ def render_ops_dashboard():
                         else:
                             selected_bl_states = []
 
-                    if not selected_bl_months:
-                        st.warning("⚠️ Please select at least one month to display Baseline metrics.")
-                    elif col_state and not selected_bl_states:
+                    if col_state and not selected_bl_states:
                         st.warning("⚠️ Please select at least one state to display Baseline metrics.")
                     else:
-                        bl_raw = bl_month_filtered
                         if col_state:
                             bl_raw = bl_raw[bl_raw[col_state].isin(selected_bl_states)].copy()
 
+                        # ── Resolve Score & Obtained Marks ───────────────────
                         col_score = _pick_col(bl_raw, [
                             "Baseline%", "Baseline %", "BL%", "BL %",
                             "Baseline Score", "Score%", "Score %",
                             "Percentage", "Marks %"
                         ])
-
                         col_total_marks = _pick_col(bl_raw, [
                             "Total Marks", "Maximum Marks", "Max Marks",
                             "Total Score", "Maximum Score"
                         ])
-
                         col_obtained_marks = _pick_col(bl_raw, [
                             "Obtained Marks", "Marks Obtained",
                             "Marks Scored", "Obtained Score", "Score Obtained"
@@ -2674,17 +2624,10 @@ def render_ops_dashboard():
 
                         if col_score is None:
                             if col_total_marks and col_obtained_marks:
-                                total_marks = pd.to_numeric(
-                                    bl_raw[col_total_marks], errors="coerce"
-                                )
-                                obtained_marks = pd.to_numeric(
-                                    bl_raw[col_obtained_marks], errors="coerce"
-                                )
-
+                                total_marks = pd.to_numeric(bl_raw[col_total_marks], errors="coerce")
+                                obtained_marks = pd.to_numeric(bl_raw[col_obtained_marks], errors="coerce")
                                 bl_raw["Baseline %"] = (
-                                    obtained_marks.div(
-                                        total_marks.where(total_marks > 0)
-                                    ) * 100
+                                    obtained_marks.div(total_marks.where(total_marks > 0)) * 100
                                 )
                                 col_score = "Baseline %"
                             else:
@@ -2695,141 +2638,137 @@ def render_ops_dashboard():
                                 st.write("Available columns:", bl_raw.columns.tolist())
                                 st.stop()
 
-                        bl_raw[col_score] = pd.to_numeric(
-                            bl_raw[col_score], errors="coerce"
-                        )
+                        bl_raw[col_score] = pd.to_numeric(bl_raw[col_score], errors="coerce")
                         bl_raw = bl_raw.dropna(subset=[col_score])
 
                         if bl_raw.empty:
-                            st.error("⚠️ No valid numeric Baseline scores found for the selected filters.")
+                            st.error("⚠️ No valid numeric Baseline scores found for the selected state(s).")
                         else:
                             col_student = _pick_col(bl_raw, ["Student ID", "Student Name", "Child ID", "Learner ID", "Name"])
                             col_center  = _pick_col(bl_raw, ["Center Name", "Centre Name", "Center", "Centre", "School"])
                             col_subject = _pick_col(bl_raw, ["Subject", "Subject Name"])
                             col_grade   = _pick_col(bl_raw, ["Grade", "Class", "Std", "Standard"])
                             col_gender  = _pick_col(bl_raw, ["Gender", "Sex"])
+                            col_cat     = _pick_col(bl_raw, ["Category", "Rubrics", "RISE", "R.I.S.E"])
 
                             bl_df = bl_raw.copy()
                             bl_df["_score"] = bl_df[col_score]
 
-                            def _tier(s):
-                                if s < 40:
-                                    return "Needs Support (<40%)"
-                                elif s < 70:
-                                    return "Developing (40–69%)"
-                                return "Proficient (≥70%)"
+                            # ── Resolve R.I.S.E. Category (Matches app.py) ───
+                            def _auto_rise(pct_series: pd.Series) -> pd.Series:
+                                return pd.cut(
+                                    pct_series.fillna(0),
+                                    bins=[-1, 25, 50, 75, 101],
+                                    labels=RISE_ORDER,
+                                ).astype(str)
 
-                            bl_df["Proficiency Tier"] = bl_df["_score"].apply(_tier)
+                            if col_cat:
+                                bl_df["RISE_Category"] = bl_df[col_cat].astype(str).str.strip().str.title()
+                                invalid_mask = ~bl_df["RISE_Category"].isin(RISE_ORDER)
+                                if invalid_mask.any():
+                                    bl_df.loc[invalid_mask, "RISE_Category"] = _auto_rise(
+                                        bl_df.loc[invalid_mask, "_score"]
+                                    )
+                            else:
+                                bl_df["RISE_Category"] = _auto_rise(bl_df["_score"])
+
+                            bl_df["RISE_Category"] = pd.Categorical(
+                                bl_df["RISE_Category"], categories=RISE_ORDER, ordered=True
+                            )
+
+                            # ── BL Score Mean Calculation (Matches app.py) ───
+                            if col_obtained_marks:
+                                bl_df["_obtained"] = pd.to_numeric(bl_df[col_obtained_marks], errors="coerce")
+                                bl_mean_val = bl_df["_obtained"].mean()
+                                bl_mean_display = f"{bl_mean_val:.2f}" if pd.notna(bl_mean_val) else f"{bl_df['_score'].mean():.1f}%"
+                                bl_mean_sub = "obtained marks mean"
+                            else:
+                                bl_mean_display = f"{bl_df['_score'].mean():.1f}%"
+                                bl_mean_sub = "percentage mean"
 
                             # ── KPI Strip ────────────────────────────────────
                             n_assessed  = bl_df[col_student].nunique() if col_student else len(bl_df)
-                            avg_bl      = bl_df["_score"].mean()
-                            med_bl      = bl_df["_score"].median()
-                            prof_pct    = (bl_df["_score"] >= 70).mean() * 100
-                            support_pct = (bl_df["_score"] < 40).mean() * 100
+                            evolving_pct = (bl_df["RISE_Category"] == "Evolving").mean() * 100
+                            reviving_pct = (bl_df["RISE_Category"] == "Reviving").mean() * 100
                             n_centres   = bl_df[col_center].nunique() if col_center else 0
 
                             k1, k2, k3, k4, k5 = st.columns(5)
-                            k1.markdown(_kpi("Students Assessed", f"{n_assessed:,}",   P["teal"],   f"{n_centres} centres" if col_center else "total rows"), unsafe_allow_html=True)
-                            k2.markdown(_kpi("Avg BL Score",      f"{avg_bl:.1f}%",     P["violet"], f"median {med_bl:.1f}%"), unsafe_allow_html=True)
-                            k3.markdown(_kpi("Proficient (≥70%)", f"{prof_pct:.1f}%",   P["green"],  "ready / strong"), unsafe_allow_html=True)
-                            k4.markdown(_kpi("Needs Support",     f"{support_pct:.1f}%",P["red"],    "below 40%"), unsafe_allow_html=True)
-                            k5.markdown(_kpi("Total Assessments", f"{len(bl_df):,}",    P["amber"],  "subject-student tests"), unsafe_allow_html=True)
+                            k1.markdown(_kpi("Students Assessed", f"{n_assessed:,}",    P["teal"],   f"{n_centres} centres" if col_center else "total rows"), unsafe_allow_html=True)
+                            k2.markdown(_kpi("BL Score Mean",     bl_mean_display,      P["violet"], bl_mean_sub), unsafe_allow_html=True)
+                            k3.markdown(_kpi("Evolving Share",    f"{evolving_pct:.1f}%", RISE_COLORS["Evolving"], "highest tier"), unsafe_allow_html=True)
+                            k4.markdown(_kpi("Reviving Share",    f"{reviving_pct:.1f}%", RISE_COLORS["Reviving"], "needs foundational support"), unsafe_allow_html=True)
+                            k5.markdown(_kpi("Total Assessments", f"{len(bl_df):,}",     P["amber"],  "subject-student tests"), unsafe_allow_html=True)
 
                             st.markdown("---")
 
-                            # ── Row 1: Proficiency Donut + Score Distribution ──
+                            # ── Row 1: R.I.S.E. Category Shift Pie + Baseline R.I.S.E. Bar Chart ──
+                            rise_summary = (
+                                bl_df["RISE_Category"]
+                                .value_counts()
+                                .reindex(RISE_ORDER, fill_value=0)
+                                .reset_index()
+                            )
+                            rise_summary.columns = ["Category", "Count"]
+                            total_rise = rise_summary["Count"].sum()
+                            rise_summary["Pct"] = (
+                                (rise_summary["Count"] / total_rise * 100) if total_rise > 0 else 0.0
+                            )
+
                             c1, c2 = st.columns(2)
+
                             with c1:
-                                st.markdown("##### Proficiency Tier Breakdown")
-                                tier_df = bl_df["Proficiency Tier"].value_counts().reset_index()
-                                tier_df.columns = ["Tier", "Count"]
-                                fig_tier = px.pie(
-                                    tier_df, names="Tier", values="Count", hole=0.48,
-                                    color="Tier",
-                                    color_discrete_map={
-                                        "Needs Support (<40%)": P["red"],
-                                        "Developing (40–69%)":  P["amber"],
-                                        "Proficient (≥70%)":    P["green"],
-                                    },
+                                st.markdown("##### 🧬 R.I.S.E. Category Shift (Baseline Share)")
+                                fig_rise_pie = px.pie(
+                                    rise_summary,
+                                    names="Category",
+                                    values="Count",
+                                    hole=0.45,
+                                    color="Category",
+                                    color_discrete_map=RISE_COLORS,
+                                    category_orders={"Category": RISE_ORDER},
                                 )
-                                fig_tier.update_traces(
+                                fig_rise_pie.update_traces(
                                     textposition="outside",
-                                    texttemplate="<b>%{label}</b><br>%{percent:.1%}",
+                                    texttemplate="<b>%{label}</b><br>%{percent:.1%} (%{value:,})",
+                                    hovertemplate="<b>%{label}</b><br>Students: %{value:,}<br>Share: %{percent:.1%}<extra></extra>",
                                 )
-                                fig_tier.update_layout(
-                                    height=320, showlegend=False,
-                                    plot_bgcolor=BG, paper_bgcolor=BG,
-                                    margin=dict(l=10, r=10, t=30, b=10),
+                                fig_rise_pie.update_layout(
+                                    height=350,
+                                    showlegend=True,
+                                    legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5, title=""),
+                                    plot_bgcolor=BG,
+                                    paper_bgcolor=BG,
+                                    margin=dict(l=10, r=10, t=30, b=30),
                                 )
-                                st.plotly_chart(fig_tier, use_container_width=True)
+                                st.plotly_chart(fig_rise_pie, use_container_width=True)
 
                             with c2:
-                                st.markdown("##### Baseline Score Distribution")
-                                fig_bl_hist = px.histogram(
-                                    bl_df, x="_score", nbins=20,
-                                    color_discrete_sequence=[P["teal"]], opacity=0.85,
+                                st.markdown("##### 📊 Baseline R.I.S.E. (Reviving, Initiating, Shaping, Evolving)")
+                                fig_rise_bar = px.bar(
+                                    rise_summary,
+                                    x="Category",
+                                    y="Pct",
+                                    color="Category",
+                                    color_discrete_map=RISE_COLORS,
+                                    text=rise_summary.apply(
+                                        lambda r: f"{r['Pct']:.1f}% ({int(r['Count']):,})", axis=1
+                                    ),
+                                    category_orders={"Category": RISE_ORDER},
                                 )
-                                fig_bl_hist.add_vline(
-                                    x=avg_bl, line_dash="dash", line_color=P["red"],
-                                    annotation_text=f"Mean {avg_bl:.1f}%"
+                                fig_rise_bar.update_traces(
+                                    textposition="outside",
+                                    marker_line_width=0,
+                                    hovertemplate="<b>%{x}</b><br>Share: %{y:.1f}%<extra></extra>",
                                 )
-                                _layout(fig_bl_hist, height=320)
-                                fig_bl_hist.update_layout(
-                                    xaxis_title="Baseline Score %",
-                                    yaxis_title="Assessments",
-                                    bargap=0.05,
+                                _layout(fig_rise_bar, height=350, margin=dict(l=0, r=0, t=30, b=10))
+                                fig_rise_bar.update_layout(
+                                    showlegend=False,
+                                    xaxis_title="R.I.S.E. Category",
+                                    yaxis=dict(range=[0, max(rise_summary["Pct"].max() * 1.2, 10)], title="% of Assessments"),
                                 )
-                                st.plotly_chart(fig_bl_hist, use_container_width=True)
+                                st.plotly_chart(fig_rise_bar, use_container_width=True)
 
-                            st.markdown("---")
-
-                            # ── Row 2: Subject & Grade Performance ───────────
-                            c3, c4 = st.columns(2)
-                            with c3:
-                                if col_subject:
-                                    st.markdown("##### Avg Baseline % by Subject")
-                                    sub_bl = (
-                                        bl_df.groupby(col_subject)["_score"].mean()
-                                        .reset_index().rename(columns={"_score": "Avg BL%"})
-                                        .sort_values("Avg BL%", ascending=True)
-                                    )
-                                    fig_sub_bl = px.bar(
-                                        sub_bl, x="Avg BL%", y=col_subject, orientation="h",
-                                        text=sub_bl["Avg BL%"].round(1).astype(str) + "%",
-                                        color="Avg BL%",
-                                        color_continuous_scale=[P["coral"], P["amber"], P["green"]],
-                                        range_color=[0, 100],
-                                    )
-                                    fig_sub_bl.update_traces(textposition="outside", marker_line_width=0)
-                                    fig_sub_bl.update_coloraxes(showscale=False)
-                                    _layout(fig_sub_bl, height=320, margin=dict(l=0, r=60, t=20, b=0))
-                                    fig_sub_bl.update_layout(
-                                        xaxis=dict(range=[0, 112], title="Avg Baseline %"),
-                                        yaxis_title="",
-                                    )
-                                    st.plotly_chart(fig_sub_bl, use_container_width=True)
-
-                            with c4:
-                                if col_subject and col_grade:
-                                    st.markdown("##### Subject × Grade Avg Baseline %")
-                                    sg_piv = bl_df.pivot_table(
-                                        index=col_subject, columns=col_grade,
-                                        values="_score", aggfunc="mean"
-                                    ).fillna(0)
-                                    fig_sg_bl = px.imshow(
-                                        sg_piv, text_auto=".0f", aspect="auto",
-                                        color_continuous_scale=["#fadbd8", P["amber"], P["teal"]],
-                                        zmin=0, zmax=100,
-                                    )
-                                    fig_sg_bl.update_layout(
-                                        height=320, plot_bgcolor=BG, paper_bgcolor=BG,
-                                        margin=dict(l=0, r=0, t=20, b=0),
-                                        coloraxis_showscale=False,
-                                    )
-                                    st.plotly_chart(fig_sg_bl, use_container_width=True)
-
-                            # ── Row 3: State & Gender Diagnostics ────────────
+                            # ── Row 2: State & Gender Diagnostics ────────────
                             if col_state or col_gender:
                                 st.markdown("---")
                                 c5, c6 = st.columns([1.4, 1])
@@ -2863,6 +2802,7 @@ def render_ops_dashboard():
                                             color_discrete_map={
                                                 "Male": P["teal"], "Female": P["coral"],
                                                 "Boys": P["teal"], "Girls": P["coral"],
+                                                "Boy": P["teal"],  "Girl": P["coral"],
                                             },
                                         )
                                         _layout(fig_gen_bl, height=300, legend_bottom=True)
@@ -2872,7 +2812,7 @@ def render_ops_dashboard():
                                         )
                                         st.plotly_chart(fig_gen_bl, use_container_width=True)
 
-                            # ── Priority Centres Table ───────────────────────
+                            # ── Priority Centres Table (R.I.S.E. Breakdown) ──
                             if col_center:
                                 st.markdown("---")
                                 st.markdown("##### 🏫 Centre Baseline Leaderboard (Lowest to Highest — Priority Support)")
@@ -2884,27 +2824,34 @@ def render_ops_dashboard():
                                 )
                                 ctr_bl = (
                                     bl_df.groupby(ctr_grp_cols, dropna=False).agg(
-                                        Assessments=("_score", "count"),
-                                        Avg_BL_Pct=("_score", "mean"),
-                                        Needs_Support_Pct=("_score", lambda s: (s < 40).mean() * 100),
-                                        Proficient_Pct=("_score", lambda s: (s >= 70).mean() * 100),
+                                        Assessments=("RISE_Category", "count"),
+                                        Reviving=("RISE_Category", lambda s: (s == "Reviving").mean() * 100),
+                                        Initiating=("RISE_Category", lambda s: (s == "Initiating").mean() * 100),
+                                        Shaping=("RISE_Category", lambda s: (s == "Shaping").mean() * 100),
+                                        Evolving=("RISE_Category", lambda s: (s == "Evolving").mean() * 100),
                                     ).reset_index()
-                                    .sort_values("Avg_BL_Pct", ascending=True)
+                                    .sort_values(
+                                        by=["Reviving", "Initiating", "Shaping", "Evolving"],
+                                        ascending=[False, False, True, True],
+                                    )
                                 )
                                 st.dataframe(
                                     ctr_bl,
                                     use_container_width=True,
                                     hide_index=True,
-                                    height=380,
+                                    height=400,
                                     column_config={
-                                        "Avg_BL_Pct": st.column_config.ProgressColumn(
-                                            "Avg BL %", min_value=0, max_value=100, format="%.1f%%"
+                                        "Reviving": st.column_config.NumberColumn(
+                                            "Reviving %", format="%.1f%%"
                                         ),
-                                        "Needs_Support_Pct": st.column_config.NumberColumn(
-                                            "Needs Support %", format="%.1f%%"
+                                        "Initiating": st.column_config.NumberColumn(
+                                            "Initiating %", format="%.1f%%"
                                         ),
-                                        "Proficient_Pct": st.column_config.NumberColumn(
-                                            "Proficient %", format="%.1f%%"
+                                        "Shaping": st.column_config.NumberColumn(
+                                            "Shaping %", format="%.1f%%"
+                                        ),
+                                        "Evolving": st.column_config.NumberColumn(
+                                            "Evolving %", format="%.1f%%"
                                         ),
                                     },
                                 )
